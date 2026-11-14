@@ -146,7 +146,8 @@ impl<'a> Pairs<'a> {
         });
         self.push(
             x.max_radius.min(y.max_radius),
-            d[0].hypot(d[1]),
+            // Same length as `distance`: a lower bound in that metric, not libm hypot.
+            (d[0] * d[0] + d[1] * d[1]).sqrt(),
             Kind::Boxes(a, b),
         )
     }

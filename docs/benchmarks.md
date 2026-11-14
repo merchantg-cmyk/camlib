@@ -72,7 +72,7 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | AdaptivePocket | [#26](https://github.com/stevecad/camlib/issues/26) | `adaptive-pocket` (adaptive) | 528 | 1122 | 519 (46%) | 51 | 6 | 6 | 472 | 144.3 / 144.0 | 0.455 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `rough-parallel` (rough) | 2927 | 37872 | 33811 (89%) | 212 | 12 | 12 | 1984 | 8900.3 / 8898.9 | 0.062 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-adaptive` (rough) | 5067 | 16332 | 3267 (20%) | 441 | 30 | 30 | 5803 | 1808.3 / 1807.4 | 8.110 |
-| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-fine-mesh` (rough) | 3295 | 7879 | 6464 (82%) | 200 | 3 | 3 | 5423 | 554.3 / 531.4 | 0.123 |
+| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-fine-mesh` (rough) | 3278 | 7855 | 6439 (82%) | 200 | 3 | 3 | 5423 | 550.2 / 527.3 | 0.123 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-offset` (rough) | 924 | 10665 | 6089 (57%) | 250 | 5 | 8 | 5776 | 1439.8 / 1436.8 | 0.060 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-raster` (rough) | 2169 | 27414 | 21241 (77%) | 614 | 13 | 24 | 5803 | 7932.3 / 7931.6 | 0.074 |
 | Contour | [#28](https://github.com/stevecad/camlib/issues/28) | `chamfer` (rough-profile) | 40 | 358 | 0 (0%) | 148 | 8 | 8 | 2243 | 55.8 / 55.7 | 0.011 |
@@ -173,7 +173,7 @@ limit the cutter actually runs, measured from the streamed moves alone
 | `roughing-raster` | 3D raster roughing around a frustum | 2169 | 7932.3 / 7931.6 | 2192 | 930.8 / 1468.4 | 0.0 / 83.1 | 0.086 | 0.011 | 0.225 | 392 |
 | `roughing-offset` | 3D offset roughing around a frustum | 924 | 1439.8 / 1436.8 | 947 | 930.8 / 1495.2 | 0.0 / 83.1 | 0.079 | 0.021 | 0.306 | 391 |
 | `roughing-adaptive` | 3D adaptive roughing around a frustum | 5067 | 1808.3 / 1807.4 | 5090 | 930.8 / 1468.4 | 0.0 / 83.1 | 8.135 | 1.642 | 48.211 | 412 |
-| `roughing-fine-mesh` | 3D offset roughing of a filleted boss from a fine mesh | 3295 | 554.3 / 531.4 | 3318 | 816.3 / 1380.1 | 0.0 / 0.4 | 0.374 | 0.240 | 12.719 | 409 |
+| `roughing-fine-mesh` | 3D offset roughing of a filleted boss from a fine mesh | 3278 | 550.2 / 527.3 | 3301 | 816.3 / 1380.1 | 0.0 / 0.4 | 0.374 | 0.240 | 12.719 | 409 |
 | `contour` | Outer and inner walls of an annulus | 40 | 55.8 / 55.7 | 63 | 0.0 / 825.6 | 0.0 / 430.2 | 0.012 | 0.005 | 0.012 | 386 |
 | `holes` | Pilot drilling then helical bore milling | 62 | 51.0 / 50.9 | 93 | 0.0 / 413.1 | 0.0 / 125.1 | 0.026 | 0.005 | 0.014 | 391 |
 | `reaming` | Drill then ream two holes | 16 | 28.7 / 28.7 | 46 | – | – | 0.011 | 0.006 | 0.005 | 45 |

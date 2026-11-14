@@ -9,8 +9,18 @@ mod pairs;
 /// Above this many candidate pairs, pairs are searched lazily (performance
 /// threshold, not a limit).
 const MAX_PAIRS: usize = 2_000_000;
+/// Separation used to order candidate bridges.
+///
+/// Squared length, then a correctly rounded square root: `+`, `*` and `sqrt`
+/// agree on every IEEE-754 platform. `f64::hypot` does not — glibc and macOS
+/// differ by one ulp (issue #169). Bridges are ordered by this distance, so
+/// that ulp swaps two of them and the offset passes are linked differently
+/// (issue #245: fine-mesh roughing plans 3295 moves on Linux and 3278 on
+/// macOS arm64).
 fn distance(a: Point, b: Point) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    (dx * dx + dy * dy).sqrt()
 }
 struct Groups {
     parent: Vec<usize>,
@@ -235,4 +245,29 @@ pub(crate) fn graph(
         }
     }
     Ok(GuideGraph { tours, links, work })
+}
+
+#[cfg(test)]
+mod tests {
+    /// Issue #245. glibc's `hypot` of this separation — a bridge `graph` orders
+    /// while planning fine-mesh roughing — is one ulp away from the correctly
+    /// rounded square root. Ordering on `hypot` follows whichever reading the
+    /// platform's libm returns; ordering on the square root does not.
+    #[test]
+    fn bridge_distance_ignores_the_other_hypot_reading() {
+        let b = [
+            f64::from_bits(4629828858962157920),
+            f64::from_bits(4622297698970182392),
+        ];
+        let (dx, dy) = (b[0], b[1]);
+        let hypot = dx.hypot(dy);
+        let squared = (dx * dx + dy * dy).sqrt();
+        // glibc returns the other ulp here. Another libm may already return
+        // `squared`. The bridge length is the square root either way.
+        assert!(
+            hypot == squared || hypot == squared.next_up() || hypot == squared.next_down(),
+            "readings {hypot} and {squared} differ by more than one ulp"
+        );
+        assert_eq!(super::distance([0., 0.], b), squared);
+    }
 }
