@@ -22,6 +22,46 @@ fn distance(a: Point, b: Point) -> f64 {
     let dy = a[1] - b[1];
     (dx * dx + dy * dy).sqrt()
 }
+
+/// (preferred radius, distance, node a, node b). Larger radius first, then
+/// the shorter distance, then the node indices. `graph` sorts with this
+/// before it accepts a bridge.
+fn bridge_cmp(a: &(f64, f64, usize, usize), b: &(f64, f64, usize, usize)) -> std::cmp::Ordering {
+    b.0.total_cmp(&a.0)
+        .then(a.1.total_cmp(&b.1))
+        .then(a.2.cmp(&b.2))
+        .then(a.3.cmp(&b.3))
+}
+
+/// Bridges `graph` would add, in order, if every candidate fits. The original
+/// edges in `joined` are already one component each. Connecting stops at
+/// `target` components, as `graph` stops at `center_components`. The sort is
+/// [`bridge_cmp`], the same one `graph` uses before the fit check.
+#[cfg(test)]
+fn accepted_bridges(
+    node_count: usize,
+    joined: &[[usize; 2]],
+    mut candidates: Vec<(f64, f64, usize, usize)>,
+    target: usize,
+) -> Vec<(usize, usize)> {
+    let mut groups = Groups::new(node_count);
+    for &[a, b] in joined {
+        groups.join(a, b);
+    }
+    candidates.sort_unstable_by(bridge_cmp);
+    let mut linked = Vec::new();
+    for (_, _, a, b) in candidates {
+        if groups.count <= target {
+            break;
+        }
+        if groups.root(a) == groups.root(b) {
+            continue;
+        }
+        groups.join(a, b);
+        linked.push((a, b));
+    }
+    linked
+}
 struct Groups {
     parent: Vec<usize>,
     count: usize,
@@ -136,12 +176,7 @@ pub(crate) fn graph(
                 }
             }
         }
-        candidates.sort_unstable_by(|a, b| {
-            b.0.total_cmp(&a.0)
-                .then(a.1.total_cmp(&b.1))
-                .then(a.2.cmp(&b.2))
-                .then(a.3.cmp(&b.3))
-        });
+        candidates.sort_unstable_by(bridge_cmp);
     }
     let mut candidates = candidates.into_iter();
     let (mut links, mut work) = (0, starting_work);
@@ -249,25 +284,51 @@ pub(crate) fn graph(
 
 #[cfg(test)]
 mod tests {
-    /// Issue #245. glibc's `hypot` of this separation — a bridge `graph` orders
-    /// while planning fine-mesh roughing — is one ulp away from the correctly
-    /// rounded square root. Ordering on `hypot` follows whichever reading the
-    /// platform's libm returns; ordering on the square root does not.
+    /// Issue #245. Two components, and two bridges that both connect them.
+    /// The critical bridge is the fine-mesh separation whose glibc `hypot`
+    /// (`HYPOT`) is the next value up from the correctly rounded square root
+    /// (`SQRT`). The neighbour's length is that square root. Both readings
+    /// are constants: the test does not call the host libm.
+    ///
+    /// `graph` stores [`super::distance`], which is `SQRT` for this
+    /// separation, and links `(0, 2)`. Ordering by `HYPOT` instead links
+    /// `(0, 3)`.
     #[test]
-    fn bridge_distance_ignores_the_other_hypot_reading() {
-        let b = [
+    fn both_readings_of_one_bridge_and_only_the_square_root_links_it() {
+        const HYPOT: u64 = 4630074070701655573;
+        const SQRT: u64 = 4630074070701655572;
+        let hypot = f64::from_bits(HYPOT);
+        let sqrt_reading = f64::from_bits(SQRT);
+        assert_eq!(
+            sqrt_reading.next_up(),
+            hypot,
+            "the two readings are one ulp apart"
+        );
+        let end = [
             f64::from_bits(4629828858962157920),
             f64::from_bits(4622297698970182392),
         ];
-        let (dx, dy) = (b[0], b[1]);
-        let hypot = dx.hypot(dy);
-        let squared = (dx * dx + dy * dy).sqrt();
-        // glibc returns the other ulp here. Another libm may already return
-        // `squared`. The bridge length is the square root either way.
-        assert!(
-            hypot == squared || hypot == squared.next_up() || hypot == squared.next_down(),
-            "readings {hypot} and {squared} differ by more than one ulp"
+        // What `graph` writes into the sort key.
+        assert_eq!(super::distance([0., 0.], end).to_bits(), SQRT);
+
+        // Edges (0, 1) and (2, 3) are the two passes. Both bridges join them.
+        // Same preferred radius, so the distance decides; indices break a tie.
+        let links = |critical: f64| {
+            super::accepted_bridges(
+                4,
+                &[[0, 1], [2, 3]],
+                vec![(1., critical, 0, 2), (1., sqrt_reading, 0, 3)],
+                1,
+            )
+        };
+        let by_sqrt = links(sqrt_reading);
+        let by_hypot = links(hypot);
+        assert_eq!(by_sqrt, vec![(0, 2)]);
+        assert_eq!(by_hypot, vec![(0, 3)]);
+        assert_ne!(
+            by_sqrt, by_hypot,
+            "the other reading links the other bridge"
         );
-        assert_eq!(super::distance([0., 0.], b), squared);
+        assert_eq!(links(super::distance([0., 0.], end)), by_sqrt);
     }
 }
