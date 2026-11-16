@@ -11,12 +11,13 @@ mod pairs;
 const MAX_PAIRS: usize = 2_000_000;
 /// Separation used to order candidate bridges.
 ///
-/// Squared length, then a correctly rounded square root: `+`, `*` and `sqrt`
-/// agree on every IEEE-754 platform. `f64::hypot` does not — glibc and macOS
-/// differ by one ulp (issue #169). Bridges are ordered by this distance, so
-/// that ulp swaps two of them and the offset passes are linked differently
-/// (issue #245: fine-mesh roughing plans 3295 moves on Linux and 3278 on
-/// macOS arm64).
+/// Use the same sequence of rounded operations on every platform. Rust's
+/// `f64::hypot` has platform-dependent precision, while `sqrt` is correctly
+/// rounded: <https://doc.rust-lang.org/std/primitive.f64.html#method.sqrt>
+/// and <https://doc.rust-lang.org/std/primitive.f64.html#method.hypot>.
+/// This is a reproducible ordering key, not a more accurate Euclidean norm:
+/// the products and sum round before the square root. In #245, a one-ulp
+/// difference changes which bridge links the fine-mesh roughing passes.
 fn distance(a: Point, b: Point) -> f64 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
@@ -33,35 +34,6 @@ fn bridge_cmp(a: &(f64, f64, usize, usize), b: &(f64, f64, usize, usize)) -> std
         .then(a.3.cmp(&b.3))
 }
 
-/// Bridges `graph` would add, in order, if every candidate fits. The original
-/// edges in `joined` are already one component each. Connecting stops at
-/// `target` components, as `graph` stops at `center_components`. The sort is
-/// [`bridge_cmp`], the same one `graph` uses before the fit check.
-#[cfg(test)]
-fn accepted_bridges(
-    node_count: usize,
-    joined: &[[usize; 2]],
-    mut candidates: Vec<(f64, f64, usize, usize)>,
-    target: usize,
-) -> Vec<(usize, usize)> {
-    let mut groups = Groups::new(node_count);
-    for &[a, b] in joined {
-        groups.join(a, b);
-    }
-    candidates.sort_unstable_by(bridge_cmp);
-    let mut linked = Vec::new();
-    for (_, _, a, b) in candidates {
-        if groups.count <= target {
-            break;
-        }
-        if groups.root(a) == groups.root(b) {
-            continue;
-        }
-        groups.join(a, b);
-        linked.push((a, b));
-    }
-    linked
-}
 struct Groups {
     parent: Vec<usize>,
     count: usize,
@@ -284,51 +256,100 @@ pub(crate) fn graph(
 
 #[cfg(test)]
 mod tests {
-    /// Issue #245. Two components, and two bridges that both connect them.
-    /// The critical bridge is the fine-mesh separation whose glibc `hypot`
-    /// (`HYPOT`) is the next value up from the correctly rounded square root
-    /// (`SQRT`). The neighbour's length is that square root. Both readings
-    /// are constants: the test does not call the host libm.
-    ///
-    /// `graph` stores [`super::distance`], which is `SQRT` for this
-    /// separation, and links `(0, 2)`. Ordering by `HYPOT` instead links
-    /// `(0, 3)`.
-    #[test]
-    fn both_readings_of_one_bridge_and_only_the_square_root_links_it() {
-        const HYPOT: u64 = 4630074070701655573;
-        const SQRT: u64 = 4630074070701655572;
-        let hypot = f64::from_bits(HYPOT);
-        let sqrt_reading = f64::from_bits(SQRT);
-        assert_eq!(
-            sqrt_reading.next_up(),
-            hypot,
-            "the two readings are one ulp apart"
-        );
-        let end = [
-            f64::from_bits(4629828858962157920),
-            f64::from_bits(4622297698970182392),
-        ];
-        // What `graph` writes into the sort key.
-        assert_eq!(super::distance([0., 0.], end).to_bits(), SQRT);
+    use super::*;
 
-        // Edges (0, 1) and (2, 3) are the two passes. Both bridges join them.
-        // Same preferred radius, so the distance decides; indices break a tie.
-        let links = |critical: f64| {
-            super::accepted_bridges(
-                4,
-                &[[0, 1], [2, 3]],
-                vec![(1., critical, 0, 2), (1., sqrt_reading, 0, 3)],
-                1,
-            )
+    // The diagonal separation is from #245's fine-mesh workload. Its rounded
+    // products/sum/sqrt give bits 4630074070701655572; glibc hypot gives the
+    // next value up (and is the correctly rounded Euclidean norm here).
+    // The axis-aligned competitor has exactly the former length. Constants
+    // keep the expected bridge independent of the host's libm.
+    pub(super) fn competing_bridge_points() -> [Point; 4] {
+        [
+            [0., 0.],
+            [-100., 0.],
+            [
+                f64::from_bits(4629828858962157920),
+                f64::from_bits(4622297698970182392),
+            ],
+            [f64::from_bits(4630074070701655572), 0.],
+        ]
+    }
+
+    #[test]
+    fn graph_links_the_reproducible_bridge_between_real_strokes() {
+        use crate::{planar::Boundary, pocket::Operation, stream::StreamManifest};
+        let manifest: StreamManifest =
+            serde_json::from_str(include_str!("../fixtures/operations/adaptive-pocket.json"))
+                .unwrap();
+        let Operation::AdaptivePocket(op) = manifest.operations[0].clone() else {
+            panic!("adaptive fixture")
         };
-        let by_sqrt = links(sqrt_reading);
-        let by_hypot = links(hypot);
-        assert_eq!(by_sqrt, vec![(0, 2)]);
-        assert_eq!(by_hypot, vec![(0, 3)]);
-        assert_ne!(
-            by_sqrt, by_hypot,
-            "the other reading links the other bridge"
-        );
-        assert_eq!(links(super::distance([0., 0.], end)), by_sqrt);
+        let mut pocket = op.pocket;
+        pocket.region.components[0].outer = Boundary {
+            vertices: vec![
+                [-110., -10., 0.],
+                [50., -10., 0.],
+                [50., 25., 0.],
+                [-110., 25., 0.],
+            ],
+        };
+        pocket.region.components[0].holes.clear();
+        let mut stock = manifest.stock.height().unwrap().clone();
+        stock.min_mm = [-115., -15., 0.];
+        stock.max_mm = [55., 30., 10.];
+        let guides = PocketPlan::prepare_region_guides(
+            pocket,
+            &manifest.tools[0],
+            &stock,
+            manifest.initial_position_mm,
+            1,
+            &|| false,
+        )
+        .unwrap();
+        let points = competing_bridge_points();
+        let result = graph(
+            &guides,
+            vec![
+                (Stroke::line(points[0], points[1]), 1., 1.),
+                (Stroke::line(points[2], points[3]), 1., 1.),
+            ],
+            GraphOptions {
+                bridge_radius: 1.,
+                cutter_radius: 2.,
+                coverage: 1.,
+                local_sizing: false,
+                starting_work: 0,
+            },
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!(result.links, 1);
+        assert_eq!(result.tours.len(), 1);
+        let bridges: Vec<_> = result.tours[0].iter().filter(|s| s.edge >= 2).collect();
+        assert!(!bridges.is_empty());
+        for bridge in bridges {
+            let s = bridge.stroke;
+            assert!(
+                (s.a == points[0] && s.b == points[2]) || (s.a == points[2] && s.b == points[0]),
+                "unexpected bridge: {:?} -> {:?}",
+                s.a,
+                s.b
+            );
+        }
+    }
+
+    #[test]
+    fn lazy_search_selects_the_reproducible_bridge() {
+        let points = competing_bridge_points();
+        let mut groups = Groups::new(points.len());
+        groups.join(0, 1);
+        groups.join(2, 3);
+        let radii = [1.; 4];
+        let mut search = pairs::Pairs::new(&points, &radii, &mut groups, &|| false).unwrap();
+        let (_, length, a, b) = search.next(&mut groups, &|| false).unwrap().unwrap();
+        assert_eq!((a, b), (0, 2));
+        assert_eq!(length.to_bits(), 4630074070701655572);
+        groups.join(a, b);
+        assert!(search.next(&mut groups, &|| false).unwrap().is_none());
     }
 }
