@@ -143,13 +143,14 @@ without a word:
   cannot bring the cutter down into: no helix of the entry's radii fits
   (`Pocket`, `RestPocket`; a plunge, `entry=None`, always fits); for
   `AdaptivePocket` no place in that connected area of tool centres is clear
-  of material to enter from and no helix fits, or the area is tighter than
-  the planner resolves (below); for `disk_front` and `stock_front` no orbit
-  fits. The message names the operation, a tool-centre position in the
-  area, the area's extent, what was tried (the helix or orbit radii and what
-  the area leaves) and the options: another entry (`RampEntry`, a plunge, a
-  smaller helix), a smaller cutter, an earlier operation that opens a start
-  there, or a region without that area.
+  of material to enter from and no helix the entry allows fits (a helix the
+  policy forbids, `StockEdgeEntry(helix=None)`, is no way in), or the area is
+  tighter than the planner resolves (below); for `disk_front` and
+  `stock_front` no orbit fits. The message names the operation, a tool-centre
+  position in the area, the area's extent, what was tried (the helix or orbit
+  radii and what the area leaves) and the options: another entry
+  (`RampEntry`, a plunge, a smaller helix), a smaller cutter, an earlier
+  operation that opens a start there, or a region without that area.
 - **A region the cutter fits nowhere in refuses the operation**, since it
   can do nothing it was asked to. (This used to be an empty plan with a
   `CamWarning`.)
@@ -414,8 +415,12 @@ no full-width slotting, for hard materials and high-speed toolpaths.
   tool centres the planner can use. It has a way in where the cutter's
   whole disk is clear of material at one of them (an entry from air or from
   cleared stock, so an earlier operation that opens a start there is one),
-  or where a helix fits at its most open position on material; with neither
-  (a slot barely wider than the cutter) the level is refused when it starts.
+  or where a helix the entry *allows* fits at its most open position on
+  material; with neither (a slot barely wider than the cutter, or an
+  enclosed area whose only way in is a helix `StockEdgeEntry(helix=None)`
+  forbids) the level is refused when it starts. The planner admits its own
+  entries and says so itself, naming the area, what it needs there and the
+  options, rather than being refused by a check of a plan it never cuts.
   `entry=RampEntry(angle_deg)` ramps into such an area instead, and is
   refused by name where no ramp fits.
 - **A slot only a little wider than the cutter** leaves it less play than
@@ -431,7 +436,11 @@ no full-width slotting, for hard materials and high-speed toolpaths.
 - **The residual area of a level** (`layers[].clearing`) counts all the
   stock left in the region at that level, from the region and the stock
   (on the steering grid, with the stock's whole-cell bounds), not from
-  where the planner could stand. `geometric_residual_area_mm2` is the sum
+  where the planner could stand. It is what the level's own wall pass left:
+  the wall pass marks the skin it cuts cleared as it is queued, like a pass's
+  strokes do, so the number is not the deeper hollow the passes before it
+  left (#311). A wall pass that is rolled back, skipped or never committed
+  marks nothing. `geometric_residual_area_mm2` is the sum
   of `residual_reachable_area_mm2` (within reach of the planner's
   positions: slivers too thin to cut), `residual_unresolved_area_mm2` (the
   cutter reaches it in the region but the planner's positions do not: the
@@ -570,11 +579,28 @@ refused with its location: export the mesh with shared edge vertices
   - **Confined material is entry motion.** In a pocket barely wider than the
     cutter no step width keeps the contact within the limit, just as the
     helix that opens it cuts a full slot. Strokes still unproven at half the
-    declared width are cut as lead moves at the entry feed (the helix feed,
-    else the plunge feed) and counted (`confined_strokes`,
-    `confined_stroke_mm`, `confined_max_engagement_deg`). This needs an entry
-    that allows a helix or a ramp; with `StockEdgeEntry(helix=None)` the
-    operation stops and names the place.
+    declared width are classified by what the wider (180°) query proves: a
+    bound past the limit is the confined case — cut as lead moves at the
+    entry feed (the helix feed, else the plunge feed) and counted
+    (`confined_strokes`, `confined_stroke_mm`, `confined_max_engagement_deg`).
+    For a straight stroke whose start pose the preceding motion certified,
+    the cutter's own correlated trail proves the whole-stroke
+    leading-contact bound is exactly 180° (including the two boundary
+    radii); this is an analytic line certificate, not an angular tolerance
+    or an endpoint check. Curved strokes still need the ordinary whole-stroke
+    query to settle.
+    This needs an entry that allows a helix or a ramp; with
+    `StockEdgeEntry(helix=None)` the operation stops and names the place. Its
+    message says the material *may be* confined, because what it names is a
+    stroke the proof could not settle: a proven bound is what shows
+    confinement. A stroke whose bound the wider query leaves unresolved is
+    never cut and never entered, whatever stopped the query (#309): the
+    stroke stays as it was queued, the attempt is rolled back, and the level
+    is refused naming both queries' reasons and the proof's counters. Where
+    that leaves material a working plan used to cut — corner arcs whose
+    certificate does not resolve at default budgets — that is a proof
+    limitation, tracked as one: the fix is a proof improvement or an
+    independently certified alternative path, not an unproven move.
   - **Each layer ends with a pass along the walls**, where stock still
     stands beside them. The front's passes end at a wall a stepover apart,
     which leaves a cusp between every two pass ends, well over the
@@ -620,7 +646,15 @@ refused with its location: export the mesh with shared edge vertices
     layer's residual area, which counts all the stock left in the layer's
     region (the three parts described for `AdaptivePocket`). A layer whose
     region the cutter fits nowhere in says so in its diagnostics, as a
-    pocket plan does, and all its stock is residual.
+    pocket plan does, and all its stock is residual. `no_helix_allowed` is
+    the entry policy's answer, not the geometry's: an enclosed area whose
+    only way in is a helix that `StockEdgeEntry(helix=None)` forbids is
+    listed like this and left for a smaller cutter, a ramp or an earlier
+    operation, while the layer cuts everything else it can reach (#310). A
+    listed area is out of the entry search from then on: its candidate
+    centres are dead, so no start is proposed inside it and no helix is
+    tried there again — dead is not cleared, and its stock is counted as
+    before.
   - **Roughing that would make no motion at all** because of such an area
     is refused, with the first area's place and the options, instead of
     planning nothing. Roughing with nothing left to cut is not an error.
@@ -1902,7 +1936,12 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
   counts the loops moved (`leads_moved`). For nested parts declare the edges
   on the part, `NestPart(no_lead=...)`, and pass the nest's `result.no_lead`
   as `keep_off` ([nesting](nesting.md)). Not planned together with
-  `common_line`.
+  `common_line`. `starts=...` declares where loops start: points on the
+  parts' drawn edges, in the sheet's coordinates. A loop whose edge passes
+  through one starts there, whatever else is declared, and is refused, never
+  moved, when its leads are not clear there. A nest planned with
+  `lead_room="at_leads"` kept room for the leads at those places only and
+  gives them as `result.lead_starts`.
 - **Corner loops**: `corner_loops=camlib.CornerLoops(overshoot_mm,
   min_angle_deg=..., max_angle_deg=...)` cuts a loop into the scrap at the
   parts' outside corners. A plasma arc trails the torch and a machine slows
@@ -1941,6 +1980,77 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
   counts the slowed stretches (`corner_slowdowns`), and `feed_seconds`
   includes them at their feed. A laser's power ramp at corners is not
   offered: no post here has a controller that documents one.
+- **Chain cutting**: `chain=camlib.ChainCutting(max_link_mm)` joins the
+  outlines of parts cut one after the other by a straight cut through the
+  scrap, from the end of one outline's lead-out to the start of the next
+  one's lead-in: the beam stays on, and the next part needs no pierce and no
+  pierce delay (Amada AP100US, "Chain and Bridge Cutting": one continuous cut
+  for the part boundaries, holes cut on their own, a longest chain length).
+  A link is cut only where it is no longer than `max_link_mm` (no default),
+  its kerf is proven clear of every part like a lead and, with
+  `avoid_cut_parts`, it keeps that clearance from the pieces already cut
+  free; where it is not, the beam goes off and the next outline is pierced
+  as before. Holes are always pierced. Parts cut one after the other, equally
+  deep, whose outlines start within `max_link_mm` of each other form a
+  chain: its holes are cut first, then its outlines, so every hole is still
+  cut before its own outline and nested parts before the parts round them.
+  Which parts follow each other is `part_order`'s. A chained outline starts
+  where a link reaches it: of its corners, stroke ends and edge middles
+  (less any edge `lead_placement` keeps free of leads), the one with the
+  shortest clear link whose leads are clear too; `leads_moved` counts it
+  when `lead_placement` is declared. Where none is reachable the outline
+  starts as it otherwise would and is pierced. A link is fed at the cut's feed with height control off,
+  like a lead, and posted as an ordinary feed move with the torch on. Not
+  planned together with `common_line`. The report counts the links
+  (`chain_links`) and their length (`chain_length_mm`, not in
+  `cut_length_mm`); `pierces` and `dwell_seconds` drop accordingly.
+- **Bridges between parts**: `bridges=camlib.Bridges(width_mm,
+  max_length_mm=..., max_parts=...)` keeps neighbouring parts joined to each
+  other by an uncut strip of the scrap between them, so small parts do not
+  tilt or drop between the slats and come off the table together, to be
+  broken apart afterwards (Amada AP100US, "Chain and Bridge Cutting": bridge
+  size and the greatest distance between parts allowed for one). Where two
+  parts at the same nesting depth have straight edges facing each other, no
+  more than `max_length_mm` apart and overlapping by the bridge and a kerf
+  either side, each outline's kerf path is opened over the bridge and the two
+  openings are joined by two cuts across the gap. The two outlines are then
+  one closed loop round both parts, cut on one pierce; the strip between the
+  crossing cuts, `width_mm` wide between the kerfs' edges, is never cut. The
+  nearest pairs are bridged first. A pair gets one bridge and a group is a
+  tree of at most `max_parts` parts: two bridges between one pair, or a ring
+  of bridged parts, would enclose a window of scrap needing a pierce of its
+  own. Parts with no facing neighbour in reach keep their own outline. There
+  are no defaults. The crossing cuts are proven clear of every part like any
+  kerf; the group's holes are cut before its loop; with `avoid_cut_parts`
+  the group comes free as one piece. Leads, micro-joints, corner treatment
+  and chain cutting apply to the group's loop as to any outline. Not planned
+  together with `common_line`. The report lists each bridge (`bridges`: its
+  two parts, its middle and the distance it spans) and the groups
+  (`bridged_groups`); `order` names every part of a group at its loop.
+- **Skeleton cut-up**: `skeleton=camlib.SkeletonCutUp(max_piece_mm,
+  part_clearance_mm=..., run_off_mm=..., area_mm=(x0, y0, x1, y1))` cuts
+  the lace left round the parts into pieces small enough to lift off the
+  table, after every part is cut and before a crop cut (Hypertherm, ProNest
+  "Skeleton Cut-Up": dedicated cuts that make the skeleton easy to remove).
+  The cuts are straight lines on an even grid over `area_mm` (the sheet, or
+  the part of it the nest used, e.g. `NestResult.used_bounds_mm` out to the
+  sheet's edges; there is no default, as the planner does not know which
+  edges are the sheet's), no further apart than `max_piece_mm` each way. A
+  line is cut only where it is over the lace: it stops `part_clearance_mm`
+  short of every part's kerf (0: it runs into the kerf, so the piece is
+  severed there), and it never runs over a hole, where there is no plate
+  under the torch. Each stretch is pierced once, at its end nearer a part
+  and the pierce clearance from every part, and cut straight to its other
+  end; where that is the area's edge it runs `run_off_mm` past it. The short
+  neck left at a pierced end that faces a part holds the piece until the
+  lace is lifted. Every pierce crater and every kerf is proven clear of
+  the parts like a crop cut's; height control is off over these cuts (they
+  cross kerfs already cut). With `avoid_cut_parts` every part is a freed
+  piece by then: the pierces and the ends of the cuts also keep that
+  clearance from every part, so the lines stop that much shorter. The report counts them (`skeleton_cuts`,
+  `skeleton_length_mm`); each is one of `pierces` and their length is in
+  `cut_length_mm`. `Nest.remnant(..., skeleton=...)` removes the area it
+  divides from the remnant ([nesting](nesting.md)).
 - **Crop cut**: `crop=camlib.CropCut(((x0, y0), (x1, y1)))` (or three points
   for an L) adds a last cut that frees the usable offcut from the skeleton.
   The points are the kerf's centre line in the sheet's coordinates. The beam
@@ -1981,12 +2091,19 @@ gap = cut.common_line_spacing_mm()   # place the parts this far apart
 - **Detection is exact**: the kerf paths of the two parts must coincide, to
   the operation's `tolerance_mm`, along a complete straight edge of both, at
   least `min_length_mm` long, ending at outside corners where the two parts
-  are flush (their neighbouring edges in line). That covers pairs and rows of
-  parts.
+  are flush (their neighbouring edges in line). That covers pairs, rows and
+  rectangular grids of parts.
+- **Grids**: where four parts meet, the common lines one way and the other
+  cross. The shared edges that lie in one line are then one cut, from the
+  group's outline on one side to its outline on the other, each shared edge
+  cut once; the lines across are cut the same way and cross them. All of
+  them come before the group's outline, so every part is held by the sheet
+  until the outline frees the group. The report's `common_lines` lists each
+  such cut once, with `pairs`: every pair of parts it separates.
 - **Refused, never cut twice**: kerf paths that coincide in any other way
   (part of an edge, parts not flush, a shorter edge than `min_length_mm`,
-  common lines meeting at a corner as in a grid, a part against a hole wall,
-  arcs), and facing edges closer than the spacing. The message names the parts
+  parts staggered so that a common line ends where only one of its two parts
+  has another beyond it, a part against a hole wall, arcs), and facing edges closer than the spacing. The message names the parts
   and the spacing. Facing edges further apart are cut separately as always;
   where their kerfs overlap this is reported. With no common line at all the
   operation plans exactly as without the option, and says so in the report.
@@ -2020,6 +2137,37 @@ gap = cut.common_line_spacing_mm()   # place the parts this far apart
 - **Report**: `common_lines` lists each one in cutting order (`parts`,
   `start_mm`, `end_mm`, `shared_length_mm`); `pierces` counts them, `loops` and
   `order` the closed loops (a group's outline is listed under its first part).
+
+### Edge starts (experimental; controller support pending)
+
+`ThermalCut(edge_starts=camlib.EdgeStarts(run_on_mm, max_lead_mm=...,
+from_kerfs=False, delay_s=0))` opts into starting loops in open material.
+The planner extends a straight lead to beyond the stock box by `run_on_mm`,
+or, with `from_kerfs=True`, to an earlier straight kerf in this operation.
+It chooses the shortest candidate within `max_lead_mm` whose lead clears
+all kept parts. Loops without such a candidate use their ordinary pierce.
+This option does not make a thickness beyond the torch's piercing capacity
+safe to program: some loops can still need piercing.
+
+The beam starts at cut height with a distinct `BeamStart` event, followed
+by the declared `delay_s`, without a pierce-height move or pierce delay.
+The report counts `edge_starts` separately from `pierces`. Before releasing
+the start event, the planner checks that its position is outside the sheet
+or its stock cell is completely cut through. Possible remaining material
+is refused. Stock checks use conservative bounds, so a narrow kerf may
+require a finer stock grid to prove it open.
+
+References: Hypertherm, *Thick metal cutting techniques*, white paper
+807850 (torch at cut height off the plate edge, motion delay, then entry);
+US patent 10,195,682 (starts over previously cut paths).
+
+The [WinCNC plasma post](wincnc-plasma-post.md) supports `BeamStart` when
+the machine declares `edge_start_cut_z_mm` and program-controlled THC.
+It uses WinCNC's published cut-height and native torch-on primitives,
+independently decodes the sequence, and keeps ordinary pierces distinct.
+Other supplied posts refuse an edge start unless they implement and check
+a documented controller sequence. Issue #306 also tracks the separate
+scribe work.
 
 ## Plasma and laser marking: `ThermalMark`
 

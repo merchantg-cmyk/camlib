@@ -1897,11 +1897,19 @@ class LeadPlacement:
     kept-off edges and whose leads and pierce are proven clear of the parts.
     A loop with no place off them is refused by name. The report counts the
     loops moved from their own start (``leads_moved``). Not planned together
-    with ``common_line``."""
+    with ``common_line``.
+
+    ``starts``: points on the parts' drawn edges, in the sheet's coordinates,
+    where loops must start: a nest planned with ``lead_room="at_leads"`` kept
+    room for the leads at those places only, and gives them as its
+    ``lead_starts``. A loop whose edge passes through one starts there,
+    whatever else is declared, and is refused when its leads are not clear
+    there (never moved)."""
 
     keep_off: tuple = ()
     keep_off_distance_mm: float = field(kw_only=True)
     prefer: object = "as_drawn"
+    starts: tuple = ()
 
     def to_dict(self):
         if self.prefer in ("as_drawn", "corner"):
@@ -1914,6 +1922,7 @@ class LeadPlacement:
             keep_off=[path.to_dict() if hasattr(path, "to_dict") else path for path in self.keep_off],
             keep_off_distance_mm=self.keep_off_distance_mm,
             prefer=prefer,
+            **({"starts": [[float(x), float(y)] for x, y in self.starts]} if self.starts else {}),
         )
 
 
@@ -1936,6 +1945,105 @@ class CornerLoops:
 
     def to_dict(self):
         return dict(overshoot_mm=self.overshoot_mm, min_angle_deg=self.min_angle_deg, max_angle_deg=self.max_angle_deg)
+
+
+@dataclass(frozen=True)
+class Bridges:
+    """Bridges between parts in a ``ThermalCut``: neighbouring parts stay
+    joined to each other by an uncut strip of the scrap between them, so small
+    parts do not tilt or drop between the slats and come off the table
+    together. Where two parts have straight edges facing each other no more
+    than ``max_length_mm`` apart, each outline is opened over the bridge and
+    the openings are joined by two cuts across the gap: the two outlines are
+    then one loop, cut on one pierce, and the strip between the crossing cuts
+    (``width_mm`` wide between the kerfs) is never cut. A pair of parts gets
+    one bridge; at most ``max_parts`` parts are joined into one group. There
+    are no defaults. Parts with no facing neighbour in reach keep their own
+    outline. Not planned with ``common_line``. The report lists the bridges
+    (``bridges``) and the groups they make (``bridged_groups``)."""
+
+    width_mm: float
+    max_length_mm: float = field(kw_only=True)
+    max_parts: int = field(kw_only=True)
+
+    def to_dict(self):
+        return dict(width_mm=self.width_mm, max_length_mm=self.max_length_mm, max_parts=self.max_parts)
+
+
+@dataclass(frozen=True)
+class SkeletonCutUp:
+    """Cut the lace into pieces after every part of a ``ThermalCut`` is cut,
+    so it can be lifted off the table: straight cuts on an even grid over
+    ``area_mm`` (``(x0, y0, x1, y1)`` in the sheet's coordinates: the sheet,
+    or the part of it the nest used), no further apart than ``max_piece_mm``.
+    A line is cut only over the lace: it stops ``part_clearance_mm`` short of
+    every part's kerf (0: into the kerf, severing the piece there) and never
+    runs over a hole. Each stretch is pierced once, at its end nearer a part
+    and the pierce clearance from it, and cut to its other end; where that
+    is the area's edge it runs ``run_off_mm`` past it. There are no
+    defaults. The cuts come after the parts and before a crop cut. The
+    report counts them (``skeleton_cuts``, ``skeleton_length_mm``); each is
+    one of ``pierces`` and their length is in ``cut_length_mm``."""
+
+    max_piece_mm: float
+    part_clearance_mm: float = field(kw_only=True)
+    run_off_mm: float = field(kw_only=True)
+    area_mm: tuple = field(kw_only=True)
+
+    def to_dict(self):
+        return dict(
+            max_piece_mm=self.max_piece_mm,
+            part_clearance_mm=self.part_clearance_mm,
+            run_off_mm=self.run_off_mm,
+            area_mm=[float(v) for v in self.area_mm],
+        )
+
+
+@dataclass(frozen=True)
+class EdgeStarts:
+    """Edge starts in a ``ThermalCut``: a loop is started where the material
+    is already open, so nothing is pierced there. A loop's straight lead-in
+    is lengthened along its own line until its far end is open:
+    ``run_on_mm`` beyond the sheet's edge (the stock's box), or, with
+    ``from_kerfs``, on the centre line of a straight kerf cut earlier in the
+    operation. Of the loop's possible starts the one with the shortest such
+    lead is taken, when it is no longer than ``max_lead_mm`` and the lead is
+    proven clear of every part; otherwise the loop is pierced as usual. The
+    beam then fires at the cut height with no pierce height and no pierce
+    delay, pausing ``delay_s`` before it moves. There are no defaults for
+    the run-on or the lead. The report counts them (``edge_starts``) and
+    ``pierces`` drops by as many. A post writes such a start only where its
+    machine declares a code for it, and refuses otherwise."""
+
+    run_on_mm: float
+    max_lead_mm: float = field(kw_only=True)
+    from_kerfs: bool = False
+    delay_s: float = 0.0
+
+    def to_dict(self):
+        return dict(
+            run_on_mm=self.run_on_mm, max_lead_mm=self.max_lead_mm, from_kerfs=self.from_kerfs, delay_s=self.delay_s
+        )
+
+
+@dataclass(frozen=True)
+class ChainCutting:
+    """Chain cutting in a ``ThermalCut``: the outlines of parts cut one after
+    the other are joined by a straight cut through the scrap, from the end of
+    one outline's lead-out to the start of the next one's lead-in, so the
+    beam stays on and the next part needs no pierce. A link is cut only where
+    it is no longer than ``max_link_mm`` (no default) and its kerf is proven
+    clear of every part; otherwise the next outline is pierced as usual.
+    Holes are always pierced; the holes of the parts in a chain are cut
+    before its outlines. A chained outline starts where the shortest clear
+    link reaches it (a corner, a stroke end or the middle of an edge). Not planned with ``common_line``. The report counts
+    the links (``chain_links``, ``chain_length_mm``) and ``pierces`` drops by
+    as many."""
+
+    max_link_mm: float
+
+    def to_dict(self):
+        return dict(max_link_mm=self.max_link_mm)
 
 
 @dataclass(frozen=True)
@@ -2029,7 +2137,16 @@ class ThermalCut:
 
     ``corner_loops=CornerLoops(...)`` cuts a loop into the scrap at outside
     corners, and ``corner_slowdown=CornerSlowdown(...)`` reduces the feed
-    round corners."""
+    round corners.
+
+    ``chain=ChainCutting(max_link_mm)`` joins the outlines of neighbouring
+    parts by cuts through the scrap, one pierce for the chain.
+
+    ``bridges=Bridges(width_mm, max_length_mm=..., max_parts=...)`` keeps
+    neighbouring parts joined to each other by an uncut strip.
+
+    ``skeleton=SkeletonCutUp(max_piece_mm, ...)`` cuts the lace into pieces
+    after the parts."""
 
     id: str
     tool: object
@@ -2063,6 +2180,10 @@ class ThermalCut:
     lead_placement: LeadPlacement | None = field(default=None, kw_only=True)
     corner_loops: CornerLoops | None = field(default=None, kw_only=True)
     corner_slowdown: CornerSlowdown | None = field(default=None, kw_only=True)
+    chain: ChainCutting | None = field(default=None, kw_only=True)
+    bridges: Bridges | None = field(default=None, kw_only=True)
+    skeleton: SkeletonCutUp | None = field(default=None, kw_only=True)
+    edge_starts: EdgeStarts | None = field(default=None, kw_only=True)
 
     def common_line_spacing_mm(self):
         """The gap between two parts whose facing edges are a common line:
@@ -2100,7 +2221,7 @@ class ThermalCut:
             result.pop("lead_placement")
         else:
             result["lead_placement"] = self.lead_placement.to_dict()
-        for name in ("corner_loops", "corner_slowdown"):
+        for name in ("corner_loops", "corner_slowdown", "chain", "bridges", "skeleton", "edge_starts"):
             option = result.pop(name)
             if option is not None:
                 result[name] = option.to_dict()

@@ -851,6 +851,13 @@ impl IntentChecker {
             {
                 (None, None)
             }
+            // A start in open material decodes as one: a controller that
+            // touched off or pierced there would not be running the plan.
+            (Event::BeamStart { power_percent: a }, [Event::BeamStart { power_percent: b }])
+                if (a - b).abs() <= 0.5 =>
+            {
+                (None, None)
+            }
             (Event::CutterCompensation { .. }, []) if self.deferred_compensation.is_some() => {
                 (None, None)
             }
@@ -1050,6 +1057,18 @@ impl IntentChecker {
         mappings: Vec<crate::post_lowering::Mapping>,
         records: Vec<FeedAttribution>,
     ) -> Output {
+        // What leaves the session is replayed and checked against stock and
+        // machine by code that models an arc as one exact circle: an arc
+        // certified here with a radius mismatch goes out as its replay
+        // circle (`post::replay_curve`), its deviation bound unchanged.
+        let mut chunk = chunk;
+        for checked in &mut chunk.checked {
+            if let Some(motion) = &mut checked.motion
+                && let Ok(curve) = crate::post::replay_curve(&motion.curve)
+            {
+                motion.curve = curve;
+            }
+        }
         Output {
             chunk,
             mappings,
