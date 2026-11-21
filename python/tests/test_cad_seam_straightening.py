@@ -50,7 +50,8 @@ if cq is not None:
 
 def _solid_from_faces(builder, fixed, flippable, min_volume=0.0):
     for flips in range(1 << len(flippable)):
-        shell, solid = TopoDS_Shell(), TopoDS_Solid()
+        shell = TopoDS_Shell()
+        solid = TopoDS_Solid()
         builder.MakeShell(shell)
         for face in fixed:
             builder.Add(shell, face)
@@ -102,7 +103,9 @@ def _add_wire(builder, face, oriented_edges):
 
 
 def _bspline2d(coords, t1, weights=None):
-    pts, knots, mults = P2d(1, len(coords)), Reals(1, 2), Ints(1, 2)
+    pts = P2d(1, len(coords))
+    knots = Reals(1, 2)
+    mults = Ints(1, 2)
     for i, (u, v) in enumerate(coords, 1):
         pts.SetValue(i, gp_Pnt2d(u, v))
     knots.SetValue(1, 0.0)
@@ -119,12 +122,16 @@ def _bspline2d(coords, t1, weights=None):
 
 def _cone_face(lean, *, tol=1e-7, match_top=False, bottom_lean=False, bspline_seam=False):
     """Build the 1-degree tapered cone face from issue #361 edge by edge."""
-    radius, height, u0 = 1.1, 3.2, math.pi
-    builder, face = BRep_Builder(), TopoDS_Face()
+    radius = 1.1
+    height = 3.2
+    u0 = math.pi
+    builder = BRep_Builder()
+    face = TopoDS_Face()
     surface = Geom_ConicalSurface(gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 0, -1), gp_Dir(-1, 0, 0)), math.radians(1), radius)
     builder.MakeFace(face, surface, tol)
     u_top = u0 + (lean * height if match_top else 0.0)
-    top, bottom = _vertex(builder, surface, u_top, 0.0, tol), _vertex(builder, surface, u0, -height, tol)
+    top = _vertex(builder, surface, u_top, 0.0, tol)
+    bottom = _vertex(builder, surface, u0, -height, tol)
 
     def circle(u_start, v, end):
         c = surface.VIso(v).Circ()
@@ -133,8 +140,10 @@ def _cone_face(lean, *, tol=1e-7, match_top=False, bottom_lean=False, bspline_se
         pc = Geom2d_Line(gp_Pnt2d(2 * u0 + 2 * math.pi, v), gp_Dir2d(-1, 0))
         return _make_edge(builder, face, geom, end, end, pc, (t_end - 2 * math.pi, t_end), tol)
 
-    c_top, c_bottom = circle(u_top, 0.0, top), circle(u0, -height, bottom)
-    a, b = surface.Value(u0, -height), surface.Value(u_top, 0.0)
+    c_top = circle(u_top, 0.0, top)
+    c_bottom = circle(u0, -height, bottom)
+    a = surface.Value(u0, -height)
+    b = surface.Value(u_top, 0.0)
     u_shift = -lean * height if bottom_lean else 0.0
     if bspline_seam:
         spans = ((0.0, -height), (0.5 * lean * height, -0.5 * height), (lean * height, 0.0))
@@ -185,11 +194,16 @@ def _tapered_hole_bushing(lean):
 
 def _helical_seam_cylinder():
     """A valid cylinder whose seam genuinely twists by 0.25 rad (0.5 mm >> tol)."""
-    tol, radius, height, twist = 1e-7, 2.0, 4.0, 0.25
-    builder, face = BRep_Builder(), TopoDS_Face()
+    tol = 1e-7
+    radius = 2.0
+    height = 4.0
+    twist = 0.25
+    builder = BRep_Builder()
+    face = TopoDS_Face()
     surface = Geom_CylindricalSurface(gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0)), radius)
     builder.MakeFace(face, surface, tol)
-    v0, v1 = _vertex(builder, surface, 0.0, 0.0, tol), _vertex(builder, surface, twist, height, tol)
+    v0 = _vertex(builder, surface, 0.0, 0.0, tol)
+    v1 = _vertex(builder, surface, twist, height, tol)
 
     def circle(u_start, v, end):
         c = surface.VIso(v).Circ()
@@ -198,7 +212,8 @@ def _helical_seam_cylinder():
             builder, face, Geom_Circle(c.Position(), c.Radius()), end, end, pc, (u_start, u_start + 2 * math.pi), tol
         )
 
-    c_bot, c_top = circle(0.0, 0.0, v0), circle(twist, height, v1)
+    c_bot = circle(0.0, 0.0, v0)
+    c_top = circle(twist, height, v1)
     samples = HP3d(1, 33)
     for i in range(1, 34):
         samples.SetValue(i, surface.Value(twist * (i - 1) / 32, height * (i - 1) / 32))
@@ -223,7 +238,8 @@ def _lean_torus_seams(lean):
     copy = cq.Shape.cast(BRepBuilderAPI_Copy(cq.Solid.makeTorus(5, 1).wrapped, True, False).Shape())
     builder = BRep_Builder()
     for face in copy.Faces():
-        face_fwd, seen = TopoDS.Face_s(face.wrapped.Oriented(TopAbs_FORWARD)), []
+        face_fwd = TopoDS.Face_s(face.wrapped.Oriented(TopAbs_FORWARD))
+        seen = []
         for edge in face.Edges():
             ew = edge.wrapped
             if not BRep_Tool.IsClosed_s(ew, face_fwd) or any(ew.IsSame(x) for x in seen):
@@ -231,8 +247,12 @@ def _lean_torus_seams(lean):
             seen.append(ew)
             c1 = BRepAdaptor_Curve2d(TopoDS.Edge_s(ew.Oriented(TopAbs_FORWARD)), face_fwd)
             c2 = BRepAdaptor_Curve2d(TopoDS.Edge_s(ew.Oriented(TopAbs_REVERSED)), face_fwd)
-            f1, l1, f2 = c1.FirstParameter(), c1.LastParameter(), c2.FirstParameter()
-            p1a, p1b, p2a = c1.Value(f1).Coord(), c1.Value(l1).Coord(), c2.Value(f2).Coord()
+            f1 = c1.FirstParameter()
+            l1 = c1.LastParameter()
+            f2 = c2.FirstParameter()
+            p1a = c1.Value(f1).Coord()
+            p1b = c1.Value(l1).Coord()
+            p2a = c2.Value(f2).Coord()
             if abs(p1b[0] - p1a[0]) < abs(p1b[1] - p1a[1]):
                 d = gp_Dir2d(lean, 1.0 if p1b[1] > p1a[1] else -1.0)
             else:
@@ -267,7 +287,8 @@ class SeamStraighteningTest(unittest.TestCase):
         arr = np.array(mesh.triangles)
         normals = np.cross(arr[:, 1] - arr[:, 0], arr[:, 2] - arr[:, 0])
         self.assertGreater(np.linalg.norm(normals, axis=1).min(), 2e-10)
-        volume, area = np.einsum("ij,ij->", arr[:, 0], normals) / 6, np.linalg.norm(normals, axis=1).sum() / 2
+        volume = np.einsum("ij,ij->", arr[:, 0], normals) / 6
+        area = np.linalg.norm(normals, axis=1).sum() / 2
         self.assertGreater(volume, 0)
         self.assertLessEqual(abs(volume - solid.Volume()), area * mesh.surface_error_mm)
         reach = 4 * max_error_mm
@@ -284,6 +305,13 @@ class SeamStraighteningTest(unittest.TestCase):
             bound = f["interpolation_error_mm"] + f["trim_error_mm"] + f["edge_weld_mm"] + fixed
             self.assertLessEqual(bound, mesh.surface_error_mm)
         self.assertEqual(sum(f["facets"] for f in src["face_bounds"]), len(mesh.triangles))
+
+    def assert_straightened_mesh(self, solid, max_error_mm, expected_seams, max_seam_err):
+        mesh = export_surface_mesh(solid, max_error_mm=max_error_mm)
+        self.assertEqual(mesh.source["seams_straightened"], expected_seams)
+        self.assertTrue(0.0 < mesh.source["seam_straighten_error_mm"] <= max_seam_err)
+        self.assert_watertight_and_bounded(solid, mesh, max_error_mm)
+        return mesh
 
     def test_repro_fails_without_fix_and_passes_with_independent_checks(self):
         self.assert_refused_without_straightening(_frustum(-1e-15))
@@ -309,62 +337,67 @@ class SeamStraighteningTest(unittest.TestCase):
         fine = _frustum(-1e-15)
         self.assert_watertight_and_bounded(fine, export_surface_mesh(fine, max_error_mm=0.002), 0.002)
 
-    def test_reversed_tapered_hole_in_bushing_straightens_without_swapping_pcurves(self):
+    def test_reversed_tapered_hole_in_bushing(self):
         bushing = _tapered_hole_bushing(-9.69e-16)
         cone = next(f for f in bushing.Faces() if f.geomType() == "CONE")
         self.assertEqual(cone.wrapped.Orientation(), TopAbs_REVERSED)
         self.assert_refused_without_straightening(bushing)
-        mesh = export_surface_mesh(bushing, max_error_mm=0.04)
-        self.assertEqual(mesh.source["seams_straightened"], 1)
-        self.assertGreater(mesh.source["seam_straighten_error_mm"], 0.0)
-        self.assert_watertight_and_bounded(bushing, mesh, 0.04)
+        self.assert_straightened_mesh(bushing, 0.04, 1, 1e-7)
 
-    def test_moved_location_bottom_lean_loose_tolerance_torus_and_bspline_seams(self):
+    def test_moved_location_frustum(self):
         trsf = gp_Trsf()
         trsf.SetTranslation(gp_Vec(50.0, -30.0, 12.0))
         moved = cq.Solid(TopoDS.Solid_s(_frustum(-1e-15).wrapped.Moved(TopLoc_Location(trsf))))
         self.assertFalse(moved.Faces()[0].wrapped.Location().IsIdentity())
-        for label, solid, max_err, expected_seams, edge_tol in (
-            ("moved location", moved, 0.04, 1, 1e-7),
-            ("bottom lean 1e-15", _frustum(-1e-15, bottom_lean=True), 0.04, 1, 1e-7),
-            ("bottom lean 1e-7", _frustum(-1e-7, tol=1e-6, bottom_lean=True), 0.04, 1, 1e-6),
-            ("loose matched slant", _frustum(-2e-4, tol=2e-3, match_top=True), 0.04, 1, 2e-3),
-            ("torus U and V seams", _lean_torus_seams(-1e-12), 0.02, 2, 1e-7),
-            ("bspline seam", _frustum(-1e-12, bspline_seam=True), 0.04, 1, 1e-7),
-        ):
-            with self.subTest(case=label):
-                mesh = export_surface_mesh(solid, max_error_mm=max_err)
-                self.assertEqual(mesh.source["seams_straightened"], expected_seams)
-                self.assertTrue(0.0 < mesh.source["seam_straighten_error_mm"] <= edge_tol)
-                self.assert_watertight_and_bounded(solid, mesh, max_err)
+        self.assert_straightened_mesh(moved, 0.04, 1, 1e-7)
 
-    def test_genuinely_slanted_and_clean_analytic_solids_untouched(self):
+    def test_bottom_lean_and_loose_tolerance_frusta(self):
+        cases = (
+            ("bottom lean 1e-15", _frustum(-1e-15, bottom_lean=True), 1e-7),
+            ("bottom lean 1e-7", _frustum(-1e-7, tol=1e-6, bottom_lean=True), 1e-6),
+            ("loose matched slant", _frustum(-2e-4, tol=2e-3, match_top=True), 2e-3),
+        )
+        for label, solid, edge_tol in cases:
+            with self.subTest(case=label):
+                self.assert_straightened_mesh(solid, 0.04, 1, edge_tol)
+
+    def test_torus_u_and_v_seams(self):
+        self.assert_straightened_mesh(_lean_torus_seams(-1e-12), 0.02, 2, 1e-7)
+
+    def test_bspline_seam_pcurves(self):
+        self.assert_straightened_mesh(_frustum(-1e-12, bspline_seam=True), 0.04, 1, 1e-7)
+
+    def test_genuinely_slanted_helical_seam_left_untouched(self):
         cylinder = _helical_seam_cylinder()
         mesh = export_surface_mesh(cylinder, max_error_mm=0.04)
         self.assertEqual((mesh.source["seams_straightened"], mesh.source["seam_straighten_error_mm"]), (0, 0.0))
 
         def cyl_distance(arr):
             pts = np.concatenate([arr[:, 0], arr.mean(1), (arr[:, 0] + arr[:, 1]) / 2])
-            r, z = np.hypot(pts[:, 0], pts[:, 1]), pts[:, 2]
+            r = np.hypot(pts[:, 0], pts[:, 1])
+            z = pts[:, 2]
             wall = np.hypot(r - 2.0, np.maximum(0.0, np.maximum(-z, z - 4.0)))
             caps = np.hypot(np.maximum(0.0, r - 2.0), np.minimum(np.abs(z), np.abs(z - 4.0)))
             return float(np.minimum(wall, caps).max())
 
         self.assert_watertight_and_bounded(cylinder, mesh, 0.04, mesh_to_surface=cyl_distance)
-        for label, solid, max_err in (
+
+    def test_clean_analytic_solids_left_untouched(self):
+        cases = (
             ("cone frustum", cq.Solid.makeCone(4, 2, 5), 0.01),
             ("cone apex", cq.Solid.makeCone(4, 0, 5), 0.01),
             ("cylinder", cq.Solid.makeCylinder(3, 5), 0.01),
             ("sphere", cq.Workplane("XY").sphere(2).val(), 0.02),
             ("torus", cq.Solid.makeTorus(5, 1), 0.02),
-        ):
+        )
+        for label, solid, max_err in cases:
             with self.subTest(shape=label):
                 clean = export_surface_mesh(solid, max_error_mm=max_err)
                 self.assertEqual(
                     (clean.source["seams_straightened"], clean.source["seam_straighten_error_mm"]), (0, 0.0)
                 )
 
-    def test_pcurve_straighten_and_3d_move_bounds_cover_independent_sampling(self):
+    def test_pcurve_straighten_bounds_lines_and_splines(self):
         vline = Geom2dAdaptor_Curve(Geom2d_Line(gp_Pnt2d(3.0, -1.0), gp_Dir2d(-1e-4, 1.0)), 2.0, 7.0)
         hline = Geom2dAdaptor_Curve(Geom2d_Line(gp_Pnt2d(1.0, 2.5), gp_Dir2d(-1.0, 2e-4)), -3.0, 4.0)
         bsp_geom, pts, wts = _bspline2d(((1.0, 0.0), (1.0 + 3e-4, 1.5), (1.0 - 2e-4, 3.0)), 3.0, (1.0, 0.7, 1.0))
@@ -377,24 +410,27 @@ class SeamStraighteningTest(unittest.TestCase):
             ("rational bezier", bez, 0, 1.0),
         ):
             with self.subTest(curve=label):
-                f0, f1 = curve.FirstParameter(), curve.LastParameter()
+                f0 = curve.FirstParameter()
+                f1 = curve.LastParameter()
                 new_curve, du, dv, (u0, u1, v0, v1) = cad._pcurve_straighten(curve, f0, f1, axis, target)
                 for i in range(101):
                     t = f0 + (f1 - f0) * i / 100
-                    orig, fixed = curve.Value(t).Coord(), new_curve.Value(t).Coord()
+                    orig = curve.Value(t).Coord()
+                    fixed = new_curve.Value(t).Coord()
                     self.assertEqual(fixed[axis], target)
                     self.assertLessEqual(abs(fixed[0] - orig[0]), du)
                     self.assertLessEqual(abs(fixed[1] - orig[1]), dv)
                     for p in (orig, fixed):
                         self.assertTrue(u0 - 1e-13 <= p[0] <= u1 + 1e-13 and v0 - 1e-13 <= p[1] <= v1 + 1e-13)
 
-        # Independently sample 3D surface displacement between old and new seam pcurves.
-        for label, solid in (
+    def test_3d_move_bound_covers_independent_sampling(self):
+        cases = (
             ("repro -1e-15", _frustum(-1e-15)),
             ("loose -2e-4", _frustum(-2e-4, tol=2e-3, match_top=True)),
             ("bspline seam", _frustum(-1e-12, bspline_seam=True)),
             ("torus seams", _lean_torus_seams(-1e-12)),
-        ):
+        )
+        for label, solid in cases:
             with self.subTest(sampled_3d=label):
                 orig_copy = cq.Shape.cast(BRepBuilderAPI_Copy(solid.wrapped, True, False).Shape())
                 work_copy, adaptors, seam_errors, count, _ = _run_straighten(solid)
@@ -411,7 +447,8 @@ class SeamStraighteningTest(unittest.TestCase):
                         for ori in (TopAbs_FORWARD, TopAbs_REVERSED):
                             oc = BRepAdaptor_Curve2d(TopoDS.Edge_s(oe.Oriented(ori)), o_fwd)
                             nc = BRepAdaptor_Curve2d(TopoDS.Edge_s(ne.Oriented(ori)), n_fwd)
-                            f0, f1 = oc.FirstParameter(), oc.LastParameter()
+                            f0 = oc.FirstParameter()
+                            f1 = oc.LastParameter()
                             for i in range(101):
                                 t = f0 + (f1 - f0) * i / 100
                                 d = ad.Value(*oc.Value(t).Coord()).Distance(ad.Value(*nc.Value(t).Coord()))
@@ -420,22 +457,27 @@ class SeamStraighteningTest(unittest.TestCase):
                 mesh = export_surface_mesh(solid, max_error_mm=0.04)
                 self.assertEqual(mesh.source["seam_straighten_error_mm"], max(seam_errors))
 
-        # Non-periodic B-spline surface: refuse when moved pcurve leaves spline.domain.
-        poles, uk, vk, um, vm = P3d2(1, 2, 1, 2), Reals(1, 2), Reals(1, 2), Ints(1, 2), Ints(1, 2)
+    def test_seam_move_bound_refuses_outside_non_periodic_spline_domain(self):
+        poles = P3d2(1, 2, 1, 2)
+        uk = Reals(1, 2)
+        vk = Reals(1, 2)
+        um = Ints(1, 2)
+        vm = Ints(1, 2)
         for iu, u in enumerate((0.0, 1.0), 1):
             for iv, v in enumerate((0.0, 1.0), 1):
                 poles.SetValue(iu, iv, gp_Pnt(u, v, u * v))
         for arr, a, b in ((uk, 0.0, 1.0), (vk, 0.0, 1.0), (um, 2, 2), (vm, 2, 2)):
             arr.SetValue(1, a)
             arr.SetValue(2, b)
-        ad = BRepAdaptor_Surface(BRepBuilderAPI_MakeFace(Geom_BSplineSurface(poles, uk, vk, um, vm, 1, 1), 1e-7).Face())
+        surface = Geom_BSplineSurface(poles, uk, vk, um, vm, 1, 1)
+        ad = BRepAdaptor_Surface(BRepBuilderAPI_MakeFace(surface, 1e-7).Face())
         sp = cad._spline_bounds(ad)
         sb = cad._surface_bounds(ad, sp)
         self.assertIsNotNone(cad._seam_move_bound(ad, sp, sb, 1e-4, 0.0, (0.0, 1.0, 0.0, 1.0)))
         self.assertIsNone(cad._seam_move_bound(ad, sp, sb, 1e-4, 0.0, (-1e-5, 1.0, 0.0, 1.0)))
         self.assertIsNone(cad._seam_move_bound(ad, sp, sb, 0.0, 1e-4, (0.0, 1.0, 0.0, 1.0 + 1e-5)))
 
-    def test_declined_leaning_seam_is_reported_on_mesher_refusal(self):
+    def test_declined_leaning_seam_reported_on_mesher_refusal(self):
         solid = _frustum(-1e-15)
         f0 = TopoDS.Face_s(solid.Faces()[0].wrapped.Oriented(TopAbs_FORWARD))
         seam = next(e.wrapped for e in solid.Faces()[0].Edges() if BRep_Tool.IsClosed_s(e.wrapped, f0))

@@ -118,15 +118,11 @@ solid, and reports in the mesh's `source`:
   a curve with such a knot, is divided there by the kernel into C1 faces that
   share the new edge (`faces_divided_at_c0`). The crease is then an edge of
   the mesh.
-- A seam edge whose pcurves lean slightly from vertical or horizontal in UV
-  (common in STEP imports of tapered holes, where Open CASCADE's mesher can
-  leave the face untriangulated) is straightened on the adapter's private copy
-  before meshing when the proven 3D move over the expanded UV region stays
-  within the edge's own tolerance (`seams_straightened`,
-  `seam_straighten_error_mm`). That move is charged to the face's trim error
-  and the mesh's `surface_error_mm`; exact seams are left untouched, and a
-  leaning seam that cannot be straightened within those bounds is left
-  untouched and reported if the mesher later refuses the face.
+- A seam edge whose pcurves lean slightly from vertical or horizontal in UV is
+  straightened on the adapter's private copy before meshing when the proven 3D
+  move stays within the edge's tolerance (`seams_straightened`,
+  `seam_straighten_error_mm`), charged to trim and surface error. Exact seams
+  stay untouched; unstraightenable leaning seams are reported on mesher refusal.
 - The solid's own tolerances (`cad_topology_error_mm`, twice the largest) are
   part of the error. A solid whose tolerances alone exceed `max_error_mm` is
   refused; a loosely toleranced import needs a larger `max_error_mm`, or

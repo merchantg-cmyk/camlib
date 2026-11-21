@@ -736,216 +736,299 @@ def _divide_at_c0(shape):
     return result, len(result.Faces()) - len(faces)
 
 
-def _pcurve_straighten(curve, first, last, axis, target):
-    """Straighten a 2D pcurve on [first, last] to constant `target` on `axis`.
-    Returns `(new_curve, du, dv, (u0, u1, v0, v1))` or None."""
-    from OCP import GeomAbs as ga
-    from OCP.Geom2d import Geom2d_BezierCurve, Geom2d_BSplineCurve, Geom2d_Line
+def _straighten_line_pcurve(curve, first, last, axis, target):
+    """Straighten a 2D line pcurve on [first, last] to constant `target` on `axis`.
+    Returns `(new_curve, du, dv, hull_points)` before numerical guard inflation."""
+    from OCP.Geom2d import Geom2d_Line
     from OCP.gp import gp_Dir2d, gp_Pnt2d
 
+    p0 = curve.Value(first).Coord()
+    p1 = curve.Value(last).Coord()
+    other = 1 - axis
+    sign = 1.0 if p1[other] >= p0[other] else -1.0
+    mid_other = 0.5 * (p0[other] + p1[other]) - sign * 0.5 * (first + last)
+    if axis == 0:
+        origin = gp_Pnt2d(target, mid_other)
+        direction = gp_Dir2d(0.0, sign)
+    else:
+        origin = gp_Pnt2d(mid_other, target)
+        direction = gp_Dir2d(sign, 0.0)
+    new_curve = Geom2d_Line(origin, direction)
+    q0 = new_curve.Value(first).Coord()
+    q1 = new_curve.Value(last).Coord()
+    du = max(abs(q0[0] - p0[0]), abs(q1[0] - p1[0]))
+    dv = max(abs(q0[1] - p0[1]), abs(q1[1] - p1[1]))
+    return new_curve, du, dv, (p0, p1, q0, q1)
+
+
+def _straighten_spline_pcurve(curve, first, last, axis, target, is_bspline):
+    """Snap poles of a 2D B-spline or Bezier pcurve on [first, last] to `target` on `axis`.
+    Returns `(new_curve, du, dv, hull_points)` before guard inflation, or None if invalid."""
+    from OCP.Geom2d import Geom2d_BezierCurve, Geom2d_BSplineCurve
+    from OCP.gp import gp_Pnt2d
+
+    raw = curve.BSpline() if is_bspline else curve.Bezier()
+    new_curve = raw.Copy()
+    if not isinstance(new_curve, Geom2d_BSplineCurve if is_bspline else Geom2d_BezierCurve):
+        return None
+    if is_bspline and new_curve.IsPeriodic():
+        new_curve.SetNotPeriodic()
+    low = new_curve.FirstParameter()
+    high = new_curve.LastParameter()
+    if first < low or last > high:
+        return None
+    if is_bspline and (first > low + 1e-12 or last < high - 1e-12):
+        new_curve.Segment(first, last)
+    pole_count = new_curve.NbPoles()
+    if pole_count < 2 or any(new_curve.Weight(i) <= 0 for i in range(1, pole_count + 1)):
+        return None
+    poles = [new_curve.Pole(i).Coord() for i in range(1, pole_count + 1)]
+    delta = max(abs(p[axis] - target) for p in poles)
+    snapped = [(target, v) if axis == 0 else (u, target) for u, v in poles]
+    for i, point in enumerate(snapped, 1):
+        new_curve.SetPole(i, gp_Pnt2d(*point))
+    if axis == 0:
+        return new_curve, delta, 0.0, poles + snapped
+    return new_curve, 0.0, delta, poles + snapped
+
+
+def _pcurve_straighten(curve, first, last, axis, target):
+    """Straighten a 2D pcurve on [first, last] to constant `target` on `axis`.
+    Returns `(new_curve, du, dv, (u0, u1, v0, v1))`, or None if unsupported or unbounded."""
+    from OCP.GeomAbs import GeomAbs_BezierCurve, GeomAbs_BSplineCurve, GeomAbs_Line
+
     kind = curve.GetType()
-    if kind == ga.GeomAbs_Line:
-        p0, p1 = curve.Value(first).Coord(), curve.Value(last).Coord()
-        other = 1 - axis
-        sign = 1.0 if p1[other] >= p0[other] else -1.0
-        origin = [target, 0.5 * (p0[other] + p1[other]) - sign * 0.5 * (first + last)]
-        if axis == 1:
-            origin.reverse()
-        new_curve = Geom2d_Line(gp_Pnt2d(*origin), gp_Dir2d(0.0, sign) if axis == 0 else gp_Dir2d(sign, 0.0))
-        q0, q1 = new_curve.Value(first).Coord(), new_curve.Value(last).Coord()
-        us, vs = (p0[0], p1[0], q0[0], q1[0]), (p0[1], p1[1], q0[1], q1[1])
-        du, dv = max(abs(q0[0] - p0[0]), abs(q1[0] - p1[0])), max(abs(q0[1] - p0[1]), abs(q1[1] - p1[1]))
-    elif kind in (ga.GeomAbs_BSplineCurve, ga.GeomAbs_BezierCurve):
-        is_bsp = kind == ga.GeomAbs_BSplineCurve
-        new_curve = (curve.BSpline() if is_bsp else curve.Bezier()).Copy()
-        if not isinstance(new_curve, Geom2d_BSplineCurve if is_bsp else Geom2d_BezierCurve):
-            return None
-        if is_bsp and new_curve.IsPeriodic():
-            new_curve.SetNotPeriodic()
-        low, high = new_curve.FirstParameter(), new_curve.LastParameter()
-        if first < low or last > high:
-            return None
-        if is_bsp and (first > low + 1e-12 or last < high - 1e-12):
-            new_curve.Segment(first, last)
-        n = new_curve.NbPoles()
-        if n < 2 or any(new_curve.Weight(i) <= 0 for i in range(1, n + 1)):
-            return None
-        poles = [list(new_curve.Pole(i).Coord()) for i in range(1, n + 1)]
-        us, vs = [p[0] for p in poles] + [target] * (axis == 0), [p[1] for p in poles] + [target] * (axis == 1)
-        delta = max(abs(p[axis] - target) for p in poles)
-        for i, p in enumerate(poles, 1):
-            p[axis] = target
-            new_curve.SetPole(i, gp_Pnt2d(*p))
-        du, dv = (delta, 0.0) if axis == 0 else (0.0, delta)
+    if kind == GeomAbs_Line:
+        result = _straighten_line_pcurve(curve, first, last, axis, target)
+    elif kind in (GeomAbs_BSplineCurve, GeomAbs_BezierCurve):
+        result = _straighten_spline_pcurve(curve, first, last, axis, target, kind == GeomAbs_BSplineCurve)
     else:
         return None
-    u0, u1, v0, v1 = min(us), max(us), min(vs), max(vs)
+    if result is None:
+        return None
+    new_curve, du, dv, points = result
+    u0 = min(p[0] for p in points)
+    u1 = max(p[0] for p in points)
+    v0 = min(p[1] for p in points)
+    v1 = max(p[1] for p in points)
     du += 4 * math.ulp(max(1.0, abs(u0), abs(u1)))
     dv += 4 * math.ulp(max(1.0, abs(v0), abs(v1)))
     return new_curve, du, dv, (u0, u1, v0, v1)
 
 
 def _seam_move_bound(adaptor, spline, bounds, du, dv, uv_box):
-    """Bound ||F(new) - F(orig)|| over `uv_box`, or None if outside bounded domain."""
-    from OCP import GeomAbs as ga
+    """Bound ||F(new) - F(orig)|| in mm over `uv_box`.
+    Returns the 3D move bound, or None if unsupported or `uv_box` leaves the proven domain."""
+    from OCP.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Plane, GeomAbs_Sphere, GeomAbs_Torus
+    from OCP.GeomAbs import GeomAbs_Circle, GeomAbs_Ellipse, GeomAbs_Line, GeomAbs_SurfaceOfExtrusion
 
     u0, u1, v0, v1 = uv_box
     kind = adaptor.GetType()
-    if kind in (ga.GeomAbs_Plane, ga.GeomAbs_Cylinder, ga.GeomAbs_Sphere, ga.GeomAbs_Torus):
+    global_surfaces = (GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Sphere, GeomAbs_Torus)
+    global_bases = (GeomAbs_Line, GeomAbs_Circle, GeomAbs_Ellipse)
+    if kind in global_surfaces or (
+        kind == GeomAbs_SurfaceOfExtrusion and adaptor.BasisCurve().GetType() in global_bases
+    ):
         fu, fv = bounds[:2]  # Analytic first-derivative bounds hold globally on R^2.
-    elif kind == ga.GeomAbs_Cone:
-        fu, fv = _local_bounds(adaptor)(v0 - dv, v1 + dv)[:2]  # Depends only on v; global in u.
+    elif kind == GeomAbs_Cone:
+        fu, fv = _local_bounds(adaptor)(v0 - dv, v1 + dv)[:2]  # Varies only with v; global in u.
     elif spline is not None:
         du0, du1, dv0, dv1 = spline.domain
         in_u = spline.periods[0] is not None or (du0 <= u0 and u1 <= du1)
-        in_v = kind == ga.GeomAbs_SurfaceOfExtrusion or spline.periods[1] is not None or (dv0 <= v0 and v1 <= dv1)
+        in_v = kind == GeomAbs_SurfaceOfExtrusion or spline.periods[1] is not None or (dv0 <= v0 and v1 <= dv1)
         if not (in_u and in_v):
             return None
         fu, fv = spline.whole[:2]
-    elif kind == ga.GeomAbs_SurfaceOfExtrusion and adaptor.BasisCurve().GetType() in (
-        ga.GeomAbs_Line,
-        ga.GeomAbs_Circle,
-        ga.GeomAbs_Ellipse,
-    ):
-        fu, fv = bounds[:2]
     else:
         return None
     move = fu * du + fv * dv
     return move if math.isfinite(move) else None
 
 
-def _straighten_seams(faces, splines, surface_bounds, budget, cancel):
-    """Straighten leaning vertical/horizontal seam pcurves on the private copy (#361)."""
+def _pcurve_lean(curve, first, last, start_uv, end_uv, axis):
+    """Return how far a 2D pcurve strays from constant `axis` over [first, last] in UV."""
+    from OCP.GeomAbs import GeomAbs_BezierCurve, GeomAbs_BSplineCurve, GeomAbs_Line
+
+    kind = curve.GetType()
+    if kind == GeomAbs_Line:
+        slope_drift = abs(curve.Line().Direction().Coord()[axis]) * (last - first)
+        return max(abs(end_uv[axis] - start_uv[axis]), slope_drift)
+    if kind in (GeomAbs_BSplineCurve, GeomAbs_BezierCurve):
+        raw = curve.BSpline() if kind == GeomAbs_BSplineCurve else curve.Bezier()
+        coords = [raw.Pole(i).Coord()[axis] for i in range(1, raw.NbPoles() + 1)]
+        return max(coords) - min(coords)
+    mid_uv = curve.Value(0.5 * (first + last)).Coord()
+    return max(abs(end_uv[axis] - start_uv[axis]), abs(mid_uv[axis] - start_uv[axis]))
+
+
+def _face_seam_corners(face, face_fwd):
+    """Collect each non-degenerated seam edge of `face_fwd` and its adjacent trim corner UVs.
+    Returns `[(edge, fwd_corners, rev_corners), ...]`, or `[]` when the face has no seams."""
     import cadquery as cq
-    from OCP import GeomAbs as ga
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve2d
+    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.TopAbs import TopAbs_FORWARD, TopAbs_REVERSED
+
+    if not any(BRep_Tool.IsClosed_s(e.wrapped, face_fwd) for e in face.Edges()):
+        return []
+    found = []
+    for wire in cq.Face(face_fwd).Wires():
+        chain = []
+        explorer = BRepTools_WireExplorer(wire.wrapped, face_fwd)
+        while explorer.More():
+            edge = explorer.Current()
+            curve = BRepAdaptor_Curve2d(edge, face_fwd)
+            start_uv = curve.Value(curve.FirstParameter()).Coord()
+            end_uv = curve.Value(curve.LastParameter()).Coord()
+            endpoints = (end_uv, start_uv) if edge.Orientation() == TopAbs_REVERSED else (start_uv, end_uv)
+            chain.append((edge, endpoints))
+            explorer.Next()
+        count = len(chain)
+        for j, (edge, _) in enumerate(chain):
+            if BRep_Tool.Degenerated_s(edge) or not BRep_Tool.IsClosed_s(edge, face_fwd):
+                continue
+            record = next((item for item in found if edge.IsSame(item[0])), None)
+            if record is None:
+                record = (edge, [], [])
+                found.append(record)
+            bucket = record[1] if edge.Orientation() == TopAbs_FORWARD else record[2]
+            prev_edge, prev_uv = chain[(j - 1) % count]
+            next_edge, next_uv = chain[(j + 1) % count]
+            for neighbour, uv in ((prev_edge, prev_uv[1]), (next_edge, next_uv[0])):
+                if not neighbour.IsSame(edge) and all(math.isfinite(x) for x in uv):
+                    bucket.append(uv)
+    return found
+
+
+def _straighten_seams(faces, splines, surface_bounds, budget, cancel):
+    """Straighten leaning vertical/horizontal seam pcurves on the private copy (#361).
+    Returns `(seam_errors, straightened_count, seam_notes)` indexed by face."""
     from OCP.BRep import BRep_Builder, BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Curve2d, BRepAdaptor_Surface
-    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.GeomAbs import GeomAbs_BezierCurve, GeomAbs_BSplineCurve, GeomAbs_Line
     from OCP.TopAbs import TopAbs_FORWARD, TopAbs_REVERSED
     from OCP.TopoDS import TopoDS
 
-    supported = (ga.GeomAbs_Line, ga.GeomAbs_BSplineCurve, ga.GeomAbs_BezierCurve)
-    builder, seam_errors, seam_notes, straightened = BRep_Builder(), [0.0] * len(faces), [[] for _ in faces], 0
+    supported = (GeomAbs_Line, GeomAbs_BSplineCurve, GeomAbs_BezierCurve)
+    builder = BRep_Builder()
+    seam_errors = [0.0] * len(faces)
+    seam_notes = [[] for _ in faces]
+    straightened = 0
 
-    def lean_of(c, f, end, pa, pb, ax):
-        k = c.GetType()
-        if k == ga.GeomAbs_Line:
-            return max(abs(pb[ax] - pa[ax]), abs(c.Line().Direction().Coord()[ax]) * (end - f))
-        if k in (ga.GeomAbs_BSplineCurve, ga.GeomAbs_BezierCurve):
-            raw = c.BSpline() if k == ga.GeomAbs_BSplineCurve else c.Bezier()
-            vals = [raw.Pole(i).Coord()[ax] for i in range(1, raw.NbPoles() + 1)]
-            return max(vals) - min(vals)
-        return max(abs(pb[ax] - pa[ax]), abs(c.Value(0.5 * (f + end)).Coord()[ax] - pa[ax]))
+    def read_pcurve(edge, orientation, face_fwd):
+        """Read one side of a seam edge, returning `(oriented, curve, first, last, start, end)` or None."""
+        oriented = TopoDS.Edge_s(edge.Oriented(orientation))
+        curve = BRepAdaptor_Curve2d(oriented, face_fwd)
+        first = curve.FirstParameter()
+        last = curve.LastParameter()
+        if not (math.isfinite(first) and math.isfinite(last) and last > first):
+            return None
+        start = curve.Value(first).Coord()
+        end = curve.Value(last).Coord()
+        if not all(math.isfinite(x) for x in (*start, *end)):
+            return None
+        return oriented, curve, first, last, start, end
+
+    def straighten_one(face_fwd, adaptor, spline, bounds, edge, pts1, pts2, axis_move):
+        """Try to straighten one leaning seam edge; returns `(changed, decline_note)`."""
+        fwd_info = read_pcurve(edge, TopAbs_FORWARD, face_fwd)
+        rev_info = read_pcurve(edge, TopAbs_REVERSED, face_fwd)
+        if fwd_info is None or rev_info is None:
+            return False, None
+        edge_fwd, c1, f1, l1, p1a, p1b = fwd_info
+        _, c2, f2, l2, p2a, p2b = rev_info
+        sep_u = abs(p1a[0] + p1b[0] - p2a[0] - p2b[0])
+        sep_v = abs(p1a[1] + p1b[1] - p2a[1] - p2b[1])
+        if sep_u == sep_v:
+            return False, None
+        axis = 0 if sep_u > sep_v else 1
+        other = 1 - axis
+        lean_uv = max(_pcurve_lean(c1, f1, l1, p1a, p1b, axis), _pcurve_lean(c2, f2, l2, p2a, p2b, axis))
+        if p1b[other] == p1a[other] or p2b[other] == p2a[other] or lean_uv == 0.0:
+            return False, None
+
+        def decline(reason):
+            orient = 'vertical' if axis == 0 else 'horizontal'
+            return False, (
+                f'has a seam whose pcurves lean from {orient} by {lean_uv:.3g} in UV, '
+                f'which could not be straightened because {reason}'
+            )
+
+        if c1.GetType() not in supported or c2.GetType() not in supported:
+            return decline(f'pcurve types ({c1.GetType().name}, {c2.GetType().name}) are not supported')
+        edge_tol = BRep_Tool.Tolerance_s(edge)
+        if axis == 0:
+            period = adaptor.UPeriod() if adaptor.IsUPeriodic() else None
+        else:
+            period = adaptor.VPeriod() if adaptor.IsVPeriodic() else None
+        valid_period = period is None or (math.isfinite(period) and period > 0.0)
+        if not (math.isfinite(edge_tol) and edge_tol >= 0.0 and valid_period):
+            return decline('its edge tolerance or surface period is not valid')
+        c1_vals = [p[axis] for p in pts1]
+        c2_vals = [p[axis] for p in pts2]
+        if period is not None:
+            turns = round(0.5 * (p1a[axis] + p1b[axis] - p2a[axis] - p2b[axis]) / period)
+            if turns == 0:
+                return decline('its two pcurves are not separated by a surface period')
+            shift = turns * period
+            bases = dict.fromkeys(c2_vals + [v - shift for v in c1_vals])
+            pairs = [(base + shift, base) for base in bases]
+        else:
+            pairs = [(t1, t2) for t1 in dict.fromkeys(c1_vals) for t2 in dict.fromkeys(c2_vals)]
+        best = None
+        reason = 'it has no adjacent trim corner to anchor to'
+        for t1, t2 in pairs:
+            r1 = _pcurve_straighten(c1, f1, l1, axis, t1)
+            r2 = _pcurve_straighten(c2, f2, l2, axis, t2)
+            if r1 is None or r2 is None:
+                reason = 'its pcurve cannot be bounded over its parameter range'
+                continue
+            m1 = _seam_move_bound(adaptor, spline, bounds, *r1[1:])
+            m2 = _seam_move_bound(adaptor, spline, bounds, *r2[1:])
+            if m1 is None or m2 is None:
+                reason = 'the straightened pcurve leaves the bounded surface domain'
+                continue
+            key = (max(m1, m2), m1 + m2)
+            if best is None or key < best[0]:
+                best = (key, r1[0], r2[0])
+        if best is None:
+            return decline(reason)
+        (move, _), nc1, nc2 = best
+        total = max(axis_move[axis], move) + axis_move[other]
+        if move > edge_tol:
+            return decline(f'the 3D move bound ({move:.3g} mm) exceeds the edge tolerance ({edge_tol:.3g} mm)')
+        if total >= budget / 2:
+            return decline(f'the 3D move bound ({total:.3g} mm) exceeds half the error budget ({budget / 2:.3g} mm)')
+        same_range = BRep_Tool.SameRange_s(edge)
+        if not same_range and (f1 != f2 or l1 != l2):
+            return decline('its forward and reversed pcurves have different parameter ranges with SameRange=False')
+        same_param = BRep_Tool.SameParameter_s(edge)
+        builder.UpdateEdge(edge_fwd, nc1, nc2, face_fwd, edge_tol)
+        if not same_range:
+            builder.Range(edge_fwd, face_fwd, f1, l1)
+            builder.SameRange(edge_fwd, same_range)
+            builder.SameParameter(edge_fwd, same_param)
+        axis_move[axis] = max(axis_move[axis], move)
+        return True, None
 
     for index, face in enumerate(faces):
         _check_cancel(cancel)
         # UpdateEdge writes (C1, C2) to the surface's (FORWARD, REVERSED) slots, while
         # BRepAdaptor_Curve2d composes with F's orientation: unwrap F to FORWARD.
         face_fwd = TopoDS.Face_s(face.wrapped.Oriented(TopAbs_FORWARD))
-        if not any(BRep_Tool.IsClosed_s(e.wrapped, face_fwd) for e in face.Edges()):
+        seam_corners = _face_seam_corners(face, face_fwd)
+        if not seam_corners:
             continue
-        adaptor, bounds, spline = BRepAdaptor_Surface(face.wrapped), surface_bounds[index], splines[index]
-        seams, corners = [], []
-        for wire in cq.Face(face_fwd).Wires():
-            chain, ex = [], BRepTools_WireExplorer(wire.wrapped, face_fwd)
-            while ex.More():
-                we = ex.Current()
-                wc = BRepAdaptor_Curve2d(we, face_fwd)
-                pa, pb = wc.Value(wc.FirstParameter()).Coord(), wc.Value(wc.LastParameter()).Coord()
-                chain.append((we, (pb, pa) if we.Orientation() == TopAbs_REVERSED else (pa, pb)))
-                ex.Next()
-            for j, (we, _) in enumerate(chain):
-                if BRep_Tool.Degenerated_s(we) or not BRep_Tool.IsClosed_s(we, face_fwd):
-                    continue
-                k = next((i for i, seen in enumerate(seams) if we.IsSame(seen)), len(seams))
-                if k == len(seams):
-                    seams.append(we)
-                    corners.append(([], []))
-                bucket = corners[k][0 if we.Orientation() == TopAbs_FORWARD else 1]
-                for oe, uv_pair, end in ((*chain[(j - 1) % len(chain)], 1), (*chain[(j + 1) % len(chain)], 0)):
-                    if not oe.IsSame(we) and all(math.isfinite(x) for x in uv_pair[end]):
-                        bucket.append(uv_pair[end])
-
+        adaptor = BRepAdaptor_Surface(face.wrapped)
         axis_move = [0.0, 0.0]
-
-        def process_seam(edge, pts1, pts2):
-            nonlocal straightened
-            ef, er = TopoDS.Edge_s(edge.Oriented(TopAbs_FORWARD)), TopoDS.Edge_s(edge.Oriented(TopAbs_REVERSED))
-            c1, c2 = BRepAdaptor_Curve2d(ef, face_fwd), BRepAdaptor_Curve2d(er, face_fwd)
-            f1, l1, f2, l2 = c1.FirstParameter(), c1.LastParameter(), c2.FirstParameter(), c2.LastParameter()
-            if not (all(math.isfinite(x) for x in (f1, l1, f2, l2)) and l1 > f1 and l2 > f2):
-                return None
-            p1a, p1b = c1.Value(f1).Coord(), c1.Value(l1).Coord()
-            p2a, p2b = c2.Value(f2).Coord(), c2.Value(l2).Coord()
-            sep = [abs(p1a[a] + p1b[a] - p2a[a] - p2b[a]) for a in (0, 1)]
-            if not all(math.isfinite(x) for x in (*p1a, *p1b, *p2a, *p2b)) or sep[0] == sep[1]:
-                return None
-            axis, other = (0, 1) if sep[0] > sep[1] else (1, 0)
-            lean_uv = max(lean_of(c1, f1, l1, p1a, p1b, axis), lean_of(c2, f2, l2, p2a, p2b, axis))
-            if p1b[other] == p1a[other] or p2b[other] == p2a[other] or lean_uv == 0.0:
-                return None
-
-            def skip(reason):
-                orient = 'vertical' if axis == 0 else 'horizontal'
-                return (
-                    f'has a seam whose pcurves lean from {orient} by {lean_uv:.3g} in UV, '
-                    f'which could not be straightened because {reason}'
-                )
-
-            edge_tol = BRep_Tool.Tolerance_s(edge)
-            periodic = adaptor.IsUPeriodic() if axis == 0 else adaptor.IsVPeriodic()
-            period = (adaptor.UPeriod() if axis == 0 else adaptor.VPeriod()) if periodic else None
-            if c1.GetType() not in supported or c2.GetType() not in supported:
-                return skip(f'pcurve types ({c1.GetType().name}, {c2.GetType().name}) are not supported')
-            valid_period = not periodic or (math.isfinite(period) and period > 0.0)
-            if not (math.isfinite(edge_tol) and edge_tol >= 0.0 and valid_period):
-                return skip('its edge tolerance or surface period is not valid')
-            c1_vals, c2_vals = [p[axis] for p in pts1], [p[axis] for p in pts2]
-            if periodic:
-                turns = round(0.5 * (p1a[axis] + p1b[axis] - p2a[axis] - p2b[axis]) / period)
-                if turns == 0:
-                    return skip('its two pcurves are not separated by a surface period')
-                shift = turns * period
-                pairs = [(b + shift, b) for b in dict.fromkeys(c2_vals + [v - shift for v in c1_vals])]
-            else:
-                pairs = [(t1, t2) for t1 in dict.fromkeys(c1_vals) for t2 in dict.fromkeys(c2_vals)]
-            best, reason = None, 'it has no adjacent trim corner to anchor to'
-            for t1, t2 in pairs:
-                r1, r2 = _pcurve_straighten(c1, f1, l1, axis, t1), _pcurve_straighten(c2, f2, l2, axis, t2)
-                if r1 is None or r2 is None:
-                    reason = 'its pcurve cannot be bounded over its parameter range'
-                    continue
-                m1 = _seam_move_bound(adaptor, spline, bounds, *r1[1:])
-                m2 = _seam_move_bound(adaptor, spline, bounds, *r2[1:])
-                if m1 is None or m2 is None:
-                    reason = 'the straightened pcurve leaves the bounded surface domain'
-                    continue
-                key = (max(m1, m2), m1 + m2)
-                if best is None or key < best[0]:
-                    best = (key, r1[0], r2[0], key[0])
-            if best is None:
-                return skip(reason)
-            _, nc1, nc2, move = best
-            total = max(axis_move[axis], move) + axis_move[other]
-            same_range, same_param = BRep_Tool.SameRange_s(edge), BRep_Tool.SameParameter_s(edge)
-            if move > edge_tol:
-                return skip(f'the 3D move bound ({move:.3g} mm) exceeds the edge tolerance ({edge_tol:.3g} mm)')
-            if total >= budget / 2:
-                return skip(f'the 3D move bound ({total:.3g} mm) exceeds half the error budget ({budget / 2:.3g} mm)')
-            if not same_range and (f1 != f2 or l1 != l2):
-                return skip('its forward and reversed pcurves have different parameter ranges with SameRange=False')
-            builder.UpdateEdge(ef, nc1, nc2, face_fwd, edge_tol)
-            if not same_range:
-                builder.Range(ef, face_fwd, f1, l1)
-                builder.SameRange(ef, same_range)
-                builder.SameParameter(ef, same_param)
-            axis_move[axis] = max(axis_move[axis], move)
-            straightened += 1
-            return None
-
-        for edge, (pts1, pts2) in zip(seams, corners):
-            note = process_seam(edge, pts1, pts2)
-            if note is not None:
+        for edge, pts1, pts2 in seam_corners:
+            changed, note = straighten_one(
+                face_fwd, adaptor, splines[index], surface_bounds[index], edge, pts1, pts2, axis_move
+            )
+            if changed:
+                straightened += 1
+            elif note is not None:
                 seam_notes[index].append(note)
         seam_errors[index] = axis_move[0] + axis_move[1]
     return seam_errors, straightened, seam_notes
@@ -1387,7 +1470,8 @@ def export_curved_solid(shape, *, max_error_mm, max_facets, source, cancel):
     face_reports = []
     max_error = 0.0
     for index, (face, mesh, row, (collapsed, max_interior)) in enumerate(zip(faces, meshes, data, face_rows)):
-        face_trim_error, trim_segments = row[4] + seam_errors[index], row[5]
+        face_trim_error = row[4] + seam_errors[index]
+        trim_segments = row[5]
         if mesh.weld + mesh.clamped + collinear > mesh.reserve:
             raise ValueError(
                 f'face {index}: facets in line at a pole move the mesh by {collinear:g} mm, more than the '
@@ -1420,8 +1504,7 @@ def export_curved_solid(shape, *, max_error_mm, max_facets, source, cancel):
                 'analytic/Bezier derivative bounds for barycentric surface interpolation (B-spline surfaces '
                 'per piece of each Bezier patch, divided into C1 faces at C0 knot lines); trims bounded by '
                 'their closed-form sag or the control polygon of the span of each chord; '
-                'seam pcurves vertical or horizontal within edge tolerance straightened on the private copy '
-                'with the 3D move bound charged; '
+                'leaning seam pcurves straightened within edge tolerance (3D move bound charged); '
                 'one vertex per mesh node of the solid (edge-curve points on CAD edges, their distance '
                 'to each face measured), every edge bisected in all its facets'
             ),
