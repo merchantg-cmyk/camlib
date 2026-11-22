@@ -204,6 +204,65 @@ class ExactSegmentPredicateTest(unittest.TestCase):
         p6, p7 = (0.281970, 0.032464), (-0.301085, -0.051244)
         self.assertTrue(cad._segments_improperly_intersect(p1, p2, p6, p7, False))
 
+    def test_bisect_model_edge_reports_exact_failure_reasons(self):
+        class _FakeSeq:
+            def __init__(self, params):
+                self._params = params
+
+            def ParametersNb(self):
+                return len(self._params)
+
+            def GetParameter(self, index):
+                return self._params[index]
+
+        class _FakeEdge:
+            def __init__(
+                self, *, degenerated=False, same_param=True, same_range=True, curve_params=(0.0, 1.0), pcurves=None
+            ):
+                self._degenerated = degenerated
+                self._same_param = same_param
+                self._same_range = same_range
+                self._curve = _FakeSeq(curve_params)
+                self._pcurves = [_FakeSeq(p) for p in (pcurves if pcurves is not None else [(0.0, 1.0)])]
+
+            def GetDegenerated(self):
+                return self._degenerated
+
+            def GetSameParam(self):
+                return self._same_param
+
+            def GetSameRange(self):
+                return self._same_range
+
+            def GetCurve(self):
+                return self._curve
+
+            def PCurvesNb(self):
+                return len(self._pcurves)
+
+            def GetPCurve(self, index):
+                return self._pcurves[index]
+
+        reason = cad._bisect_model_edge(_FakeEdge(), 1.0, math.nextafter(1.0, 2.0))
+        self.assertIn("parameter resolution", reason)
+
+        reason = cad._bisect_model_edge(_FakeEdge(degenerated=True), 0.0, 1.0)
+        self.assertIn("degenerated", reason)
+        self.assertNotIn("parameter resolution", reason)
+
+        for kwargs in (dict(same_param=False), dict(same_range=False)):
+            reason = cad._bisect_model_edge(_FakeEdge(**kwargs), 0.0, 1.0)
+            self.assertIn("SameParameter/SameRange", reason)
+            self.assertNotIn("parameter resolution", reason)
+
+        reason = cad._bisect_model_edge(_FakeEdge(curve_params=(0.0, 2.0)), 0.0, 1.0)
+        self.assertIn("3D edge", reason)
+        self.assertNotIn("parameter resolution", reason)
+
+        reason = cad._bisect_model_edge(_FakeEdge(pcurves=[(0.0, 1.0), (0.0, 2.0)]), 0.0, 1.0)
+        self.assertIn("2D pcurve", reason)
+        self.assertNotIn("parameter resolution", reason)
+
 
 @unittest.skipIf(cq is None, "needs CadQuery")
 class TangentCuspExportTest(unittest.TestCase):
@@ -261,12 +320,12 @@ class TangentCuspExportTest(unittest.TestCase):
                     solid, surface, max_error, extra_points=tip_pts, check_all_facets=(max_error >= 0.04)
                 )
         # At 0.06 mm (the failing case on main), repair bisects the offending chords
-        # and produces deterministic output.
-        first = export_surface_mesh(solid, max_error_mm=0.06)
-        second = export_surface_mesh(solid, max_error_mm=0.06)
-        self.assertGreater(first.source["cusp_trim_bisections"], 0)
-        self.assertEqual(first.triangles, second.triangles)
-        self.assertEqual(first.surface_error_mm, second.surface_error_mm)
+        # and produces byte-identical output across repeated runs.
+        runs = [export_surface_mesh(solid, max_error_mm=0.06) for _ in range(3)]
+        self.assertGreater(runs[0].source["cusp_trim_bisections"], 0)
+        for other in runs[1:]:
+            self.assertEqual(runs[0].triangles, other.triangles)
+            self.assertEqual(runs[0].surface_error_mm, other.surface_error_mm)
 
     def test_tilted_production_scale_sharp_cusp_and_split_tip_faces(self):
         tilted = _repro_solid().rotate((0, 0, 0), (1, 2, 3), 37).translate((250.0, -180.0, 42.0))
@@ -303,6 +362,93 @@ class TangentCuspExportTest(unittest.TestCase):
         with mock.patch.object(cad, "_MAX_CUSP_BISECTIONS_PER_FACE", 1):
             with self.assertRaisesRegex(ValueError, "cusp"):
                 export_surface_mesh(sharp, max_error_mm=0.05)
+
+    def _repro_healed_context(self, shape):
+        from OCP.BRepMesh import BRepMesh_EdgeDiscret, BRepMesh_ModelBuilder, BRepMesh_ModelHealer
+        from OCP.IMeshTools import IMeshTools_Context, IMeshTools_Parameters
+
+        ctx = IMeshTools_Context()
+        ctx.SetShape(shape.wrapped)
+        params = ctx.ChangeParameters()
+        params.Deflection = 0.027
+        params.DeflectionInterior = 0.12
+        params.Angle = 0.5
+        params.AngleInterior = 1.0
+        params.MinSize = max(1e-7, 0.027 * IMeshTools_Parameters.RelMinSize_s())
+        params.Relative = False
+        params.InParallel = False
+        ctx.SetModelBuilder(BRepMesh_ModelBuilder())
+        ctx.SetEdgeDiscret(BRepMesh_EdgeDiscret())
+        ctx.SetModelHealer(BRepMesh_ModelHealer())
+        self.assertTrue(ctx.BuildModel())
+        self.assertTrue(ctx.DiscretizeEdges())
+        self.assertTrue(ctx.HealModel())
+        return ctx
+
+    def test_unmatched_face_does_not_name_face_zero(self):
+        repro = _repro_solid()
+        other_faces = cq.Solid.makeBox(1.0, 1.0, 1.0).Faces()
+        ctx = self._repro_healed_context(repro)
+        try:
+            _, failed_face, reason = cad._repair_model_self_intersections(
+                ctx.GetModel(), other_faces, None, max_bisections=0
+            )
+        finally:
+            ctx.Clean()
+        self.assertIsNone(failed_face)
+        self.assertIn("tangent cusp", reason)
+        self.assertNotIn("face 0", reason)
+
+        with mock.patch.object(
+            cad,
+            "_repair_model_self_intersections",
+            return_value=(0, None, "UV trim polygon self-intersects (tangent cusp) after 0 edge bisections"),
+        ):
+            with self.assertRaises(ValueError) as raised:
+                export_surface_mesh(repro, max_error_mm=0.06)
+        message = str(raised.exception)
+        self.assertIn("tangent cusp", message)
+        self.assertNotIn("face 0", message)
+
+    def test_same_parameter_false_reports_true_reason(self):
+        repro = _repro_solid()
+        ctx = self._repro_healed_context(repro)
+        try:
+
+            def clear_same_param():
+                model = ctx.GetModel()
+                for ei in range(model.EdgesNb()):
+                    model.GetEdge(ei).SetSameParam(False)
+
+            clear_same_param()
+            _, failed_face, reason = cad._repair_model_self_intersections(ctx.GetModel(), repro.Faces(), None)
+        finally:
+            ctx.Clean()
+        self.assertIsNotNone(failed_face)
+        self.assertIn("SameParameter/SameRange", reason)
+        self.assertNotIn("parameter resolution", reason)
+
+    def test_mesher_stage_failure_refuses_with_stage_name(self):
+        from OCP.IMeshTools import IMeshTools_Context
+
+        repro = _repro_solid()
+        for stage in ("HealModel", "DiscretizeFaces"):
+            with self.subTest(stage=stage):
+                with mock.patch.object(IMeshTools_Context, stage, return_value=False):
+                    with self.assertRaises(ValueError) as raised:
+                        export_surface_mesh(repro, max_error_mm=0.06)
+                self.assertIn(f"BRepMesh {stage} failed during tangent cusp repair", str(raised.exception))
+
+    def test_missing_ocp_attribute_refuses_cleanly(self):
+        from OCP.IMeshTools import IMeshTools_Context
+
+        repro = _repro_solid()
+        with mock.patch.object(IMeshTools_Context, "HealModel", side_effect=AttributeError("missing HealModel")):
+            with self.assertRaises(ValueError) as raised:
+                export_surface_mesh(repro, max_error_mm=0.06)
+        message = str(raised.exception)
+        self.assertIn("OCP version", message)
+        self.assertIn("missing HealModel", message)
 
     def test_exported_repro_mesh_passes_native_material_verifier_and_limits(self):
         from array import array
