@@ -198,6 +198,8 @@ class ExactSegmentPredicateTest(unittest.TestCase):
         self.assertFalse(cad._segments_improperly_intersect((0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0), False))
         # Adjacent normal corner vs 180-degree foldback
         self.assertFalse(cad._segments_improperly_intersect((0.0, 0.0), (1.0, 0.0), (1.0, 0.0), (1.0, 1.0), True))
+        # The same contact is a self-touch if the segments are not wire neighbours.
+        self.assertTrue(cad._segments_improperly_intersect((0.0, 0.0), (1.0, 0.0), (1.0, 0.0), (1.0, 1.0)))
         self.assertTrue(cad._segments_improperly_intersect((0.0, 0.0), (1.0, 0.0), (1.0, 0.0), (0.5, 0.0), True))
         # Repro cusp crossing: spline chord (1->2) crosses arc chord (6->7)
         p1, p2 = (-0.889453, -0.079231), (-0.109132, -0.040252)

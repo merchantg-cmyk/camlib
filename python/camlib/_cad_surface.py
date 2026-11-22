@@ -729,15 +729,15 @@ def _foldback(p, shared, q):
 
 def _segments_improperly_intersect(a, b, c, d, adjacent=False):
     """Exact test whether UV segments (a, b) and (c, d) cross or fold back."""
-    if adjacent:
-        return _foldback(a, b, d)
     if max(a[0], b[0]) < min(c[0], d[0]) or max(c[0], d[0]) < min(a[0], b[0]):
         return False
     if max(a[1], b[1]) < min(c[1], d[1]) or max(c[1], d[1]) < min(a[1], b[1]):
         return False
-    for p, shared, q in ((b, a, d), (b, a, c), (a, b, d), (a, b, c)):
-        if (shared == c and q == d) or (shared == d and q == c):
-            return _foldback(p, shared, q)
+    for shared, p in ((a, b), (b, a)):
+        if shared == c:
+            return not adjacent or _foldback(p, shared, d)
+        if shared == d:
+            return not adjacent or _foldback(p, shared, c)
     o1 = _orient2d_sign(a, b, c)
     o2 = _orient2d_sign(a, b, d)
     o3 = _orient2d_sign(c, d, a)
@@ -799,19 +799,28 @@ def _find_uv_trim_conflict(mesh_face):
                 if a_pt == b_pt:
                     return [seg]
                 entries.append(
-                    (min(a_pt[0], b_pt[0]), max(a_pt[0], b_pt[0]), min(a_pt[1], b_pt[1]), max(a_pt[1], b_pt[1]), seg)
+                    (
+                        min(a_pt[0], b_pt[0]),
+                        max(a_pt[0], b_pt[0]),
+                        min(a_pt[1], b_pt[1]),
+                        max(a_pt[1], b_pt[1]),
+                        wi,
+                        len(segs),
+                        seg,
+                    )
                 )
                 segs.append(seg)
         wires.append((wire.GetWire().IsSame(outer), segs))
     entries.sort(key=lambda item: item[0])
-    for i, (_, maxx_i, miny_i, maxy_i, seg_i) in enumerate(entries):
+    for i, (_, maxx_i, miny_i, maxy_i, wi, si, seg_i) in enumerate(entries):
         for j in range(i + 1, len(entries)):
-            minx_j, _, miny_j, maxy_j, seg_j = entries[j]
+            minx_j, _, miny_j, maxy_j, wj, sj, seg_j = entries[j]
             if minx_j > maxx_i:
                 break
             if maxy_i < miny_j or maxy_j < miny_i:
                 continue
-            if _segments_improperly_intersect(seg_i[2], seg_i[3], seg_j[2], seg_j[3]):
+            adjacent = wi == wj and abs(si - sj) in (1, len(wires[wi][1]) - 1)
+            if _segments_improperly_intersect(seg_i[2], seg_i[3], seg_j[2], seg_j[3], adjacent):
                 return [seg_i, seg_j]
     for is_outer, segs in wires:
         if segs:
