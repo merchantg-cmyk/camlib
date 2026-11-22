@@ -78,6 +78,12 @@ combinations and impossible dimensions are rejected before any motion.
   tool's table pose, or the spindle staying where it was);
   its first move is checked like any rapid, and posting refuses a setup that
   disagrees with the machine.
+- `Setup(end_position=EndPosition(gauge_z_mm=..., xy_mm=...))` ends a milling
+  program at a stated position: a Z rapid to the gauge height, then an XY
+  rapid, checked, posted and decoded like any move; none is assumed.
+- `ToolChangeInPlace(retract_gauge_z_mm=...)` plans a Z retract to a stated
+  spindle gauge height before every tool change in place, as an ordinary
+  checked, posted and decoded rapid; no retract is assumed without it.
 - Avoid areas and containment regions apply to every operation and to every
   rapid and link.
 
@@ -118,6 +124,11 @@ solid, and reports in the mesh's `source`:
   a curve with such a knot, is divided there by the kernel into C1 faces that
   share the new edge (`faces_divided_at_c0`). The crease is then an edge of
   the mesh.
+- A seam edge whose pcurves lean slightly from vertical or horizontal in UV is
+  straightened on the adapter's private copy before meshing when the proven 3D
+  move stays within the edge's tolerance (`seams_straightened`,
+  `seam_straighten_error_mm`), charged to trim and surface error. Exact seams
+  stay untouched; unstraightenable leaning seams are reported on mesher refusal.
 - The solid's own tolerances (`cad_topology_error_mm`, twice the largest) are
   part of the error. A solid whose tolerances alone exceed `max_error_mm` is
   refused; a loosely toleranced import needs a larger `max_error_mm`, or
