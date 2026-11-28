@@ -125,6 +125,18 @@ Key settings:
 - **Limits**: `max_feed_mm_min`, `max_spindle_rpm`, `max_tool_number`,
   `max_length_register`, `tool_changes` (False: one preloaded tool), `flood`,
   `mist`; `feed_tolerance_mm_min` (0.1) is the allowed feed difference.
+  These declared values are the only machine limits a program is held to
+  (#429): the motion checks themselves bound nothing but numeric safety
+  (finite numbers, signs, coordinates within ±1e6 mm, sweeps up to 1000
+  turns). A feed per revolution, a thread lead, a surface speed or a dwell
+  has no bound of camlib's own; a feed per revolution is held to
+  `max_feed_mm_min` move by move, as mm/rev times the highest rpm along the
+  move, and a dwell to the dialect's `dwell_max_s` when it is written. A
+  refusal names the operation, the value, the limit and the field it comes
+  from, with the event (and move) index after the words, for example
+  `face: the programmed feed, the feed per revolution 250 mm/rev at 2500 rpm
+  (the highest along the move), 625000 mm/min, is above the machine's
+  maximum feed 10000 mm/min (Machine.max_feed_mm_min) (move 3, event 7)`.
 - **Dynamics**: `max_normal_accel_mm_s2` and `max_axis_feed_mm_min` report curve
   feeds the machine cannot reach. `motion_policy=MotionPolicy(
   tangential_accel_mm_s2, rapid_feed_mm_min, junction_mode="exact_stop" or
@@ -310,6 +322,15 @@ accept a small start/end radius mismatch and cut a spiral between the two radii:
 | Centroid CNC12 | Not documented, so the example post uses `radius_tolerance_mm=0` |
 
 A representable arc end can differ from the planned end by part of a word.
+With `native_arcs=True`, an arc's exactly consistent words can move its end
+further along the word grid, within `tolerance_mm` of the arc. A curve lowered
+to lines right after it starts from that decoded end, and its first chord is
+charged with the offset as well as its own sagitta. Where the uniform first
+chord would exceed `tolerance_mm` that way, the lowering starts with a shorter
+lead chord, of half the sagitta the offset leaves room for, and continues with
+the uniform chords (#445). Every chord, the lead included, is still certified
+independently against the planned curve within `tolerance_mm`; an offset that
+leaves no room is refused.
 A full circle (an adaptive orbit, a closed helix turn) always closes exactly:
 its end word repeats the controller's actual start, so start and end radius
 are identical and only the I/J rounding remains (checked against the planned
